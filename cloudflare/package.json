@@ -1,0 +1,24 @@
+{
+  "name": "cue-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cue share stack on Cloudflare — Worker (API + web player) + D1 (metadata) + R2 (video) + Workers AI (Whisper transcription)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "db:schema": "wrangler d1 execute cue --remote --file=./schema.sql",
+    "db:schema:local": "wrangler d1 execute cue --local --file=./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
+  },
+  "dependencies": {
+    "aws4fetch": "^1.0.20",
+    "jose": "^5.9.6"
+  }
+}

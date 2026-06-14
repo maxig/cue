@@ -1,0 +1,62 @@
+name = "cue"
+main = "src/index.js"
+compatibility_date = "2026-06-01"
+workers_dev = true
+
+routes = [
+  { pattern = "cue.example.com", custom_domain = true }
+]
+
+# --- R2: stores the recorded videos (final.mp4 + any tracks) ------------------
+# Create with:  npx wrangler r2 bucket create cue
+[[r2_buckets]]
+binding = "MEDIA"             # available as env.MEDIA in the Worker
+bucket_name = "cue"
+preview_bucket_name = "cue"   # used by `wrangler dev`
+
+# --- D1: metadata store (replaces server/db.json) -----------------------------
+# Create with:  npx wrangler d1 create cue   (paste the printed id below)
+[[d1_databases]]
+binding = "DB"                # env.DB
+database_name = "cue"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# --- Workers AI: Whisper transcription (optional) -----------------------------
+[ai]
+binding = "AI"               # env.AI
+
+[observability]
+enabled = true
+
+# --- Owner auth (required) ----------------------------------------------------
+# The entire /api surface (register, list, fetch, transcribe, delete,
+# disable/enable) requires `Authorization: Bearer <OWNER_TOKEN>`. Set it as a
+# secret, NOT here:
+#   npx wrangler secret put OWNER_TOKEN
+# Fail-closed: until it's set /api returns 503; a wrong/missing token gets 401.
+# Public viewing (/v/:id, /file) is separate and only serves enabled links.
+
+[vars]
+# Keep total R2 usage under this many bytes. When a new upload pushes usage over,
+# the oldest recordings are evicted from R2 (local copies in the app remain, so
+# they can be re-uploaded). Default 9 GB, comfortably under the 10 GB free tier.
+MAX_BYTES = "9000000000"
+
+# Optional. Public base where R2 objects are served — a custom domain bound to
+# the bucket, e.g. "https://media.cue.example". Leave empty to stream objects
+# through the Worker at /file/<key> (handy before you set up a domain; not for
+# heavy production traffic — see README).
+MEDIA_PUBLIC_BASE = ""
+
+# --- Owner dashboard via Cloudflare Access (optional) -------------------------
+# Open a private web library at /app (every recording, with Enable/Disable/
+# Delete) — gated by Cloudflare Access, so you log in with your Cloudflare/Zero
+# Trust identity instead of typing the owner token in a browser. Fill both in
+# after creating an Access app (README -> "Owner dashboard via Cloudflare
+# Access"); leave empty and /app stays locked (fail-closed).
+ACCESS_TEAM_DOMAIN = ""   # e.g. "yourteam.cloudflareaccess.com"
+ACCESS_AUD = ""           # the Access app's "Application Audience (AUD)" tag
+
+# Optional. Force the canonical base used to build share links. Leave unset to
+# derive it from the incoming request (works on *.workers.dev and custom domains).
+# PUBLIC_BASE = "https://cue.example"

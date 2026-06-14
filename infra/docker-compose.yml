@@ -1,0 +1,44 @@
+# Local self-hosted storage for Cue.
+#
+#   docker compose -f infra/docker-compose.yml up -d
+#
+# MinIO S3 API : http://localhost:9000
+# MinIO console: http://localhost:9001   (cueadmin / cuesecret123)
+# Bucket       : cue   (anonymous download enabled so the web player can stream)
+
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: cue-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: cueadmin
+      MINIO_ROOT_PASSWORD: cuesecret123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - cue-minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: create the bucket and make objects publicly readable.
+  createbucket:
+    image: minio/mc:latest
+    container_name: cue-createbucket
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 cueadmin cuesecret123 &&
+      mc mb -p local/cue &&
+      mc anonymous set download local/cue &&
+      echo 'Cue bucket ready (public download).'
+      "
+
+volumes:
+  cue-minio-data:

@@ -1,0 +1,14 @@
+{
+  "name": "cue-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cue share API + web player",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
