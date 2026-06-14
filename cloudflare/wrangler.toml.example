@@ -57,6 +57,10 @@ MEDIA_PUBLIC_BASE = ""
 ACCESS_TEAM_DOMAIN = ""   # e.g. "yourteam.cloudflareaccess.com"
 ACCESS_AUD = ""           # the Access app's "Application Audience (AUD)" tag
 
+# Workers AI model for /summarize (the dashboard's Summarize button). Switch to
+# @cf/meta/llama-3.1-8b-instruct-fp8 to spend fewer daily Neurons (free 10k/day).
+SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
 # Optional. Force the canonical base used to build share links. Leave unset to
 # derive it from the incoming request (works on *.workers.dev and custom domains).
 # PUBLIC_BASE = "https://cue.example"

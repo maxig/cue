@@ -114,6 +114,9 @@ export function renderPlayer(v) {
   const transcriptBody = v.transcript
     ? `<div class="transcript">${esc(v.transcript)}</div>`
     : `A searchable, word-level transcript will appear here. <span class="soon">Phase 2</span>`;
+  const summaryBody = v.summary
+    ? `<div class="transcript">${esc(v.summary)}</div>`
+    : `An AI summary and smart chapters will appear here. <span class="soon">Phase 2</span>`;
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8" />
@@ -156,7 +159,7 @@ export function renderPlayer(v) {
         <button onclick="tab(this,'activity')">Activity</button>
       </div>
       <div class="tabbody">
-        <div data-tab="summary">An AI summary and smart chapters will appear here. <span class="soon">Phase 2</span></div>
+        <div data-tab="summary">${summaryBody}</div>
         <div data-tab="transcript" hidden>${transcriptBody}</div>
         <div data-tab="activity" hidden>Views, reactions, and comments will appear here. <span class="soon">Phase 2</span></div>
       </div>
@@ -240,12 +243,30 @@ const APP_CSS = `
   .btn.danger { color: #ff8a8a; border-color: rgba(255,90,90,0.35); }
   .btn.danger:hover { background: rgba(255,90,90,0.14); }
   .count { color: var(--muted); font-size: 13px; }
+  .actions { flex-wrap: wrap; }
+  .badge.ai { color: var(--accent); background: rgba(10,132,255,0.14); }
+  .aiout { padding: 0 14px 14px; }
+  .aiout b { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .aitext { white-space: pre-wrap; line-height: 1.55; font-size: 13.5px; max-height: 260px; overflow: auto; }
+  .banner { padding: 10px 14px; border-radius: 12px; margin-bottom: 14px; font-size: 13px; font-weight: 600; }
+  .banner.ok { background: rgba(46,194,107,0.16); color: #2ec26b; }
+  .banner.err { background: rgba(255,90,90,0.14); color: #ff8a8a; }
 `;
 
 // Private owner dashboard at /app — lists every recording with Enable/Disable
 // and Delete controls. Reachable only behind Cloudflare Access (or the bearer
 // token); the Worker fails closed otherwise.
-export function renderApp(videos, { base = "" } = {}) {
+export function renderApp(videos, { base = "", flash = "", error = "" } = {}) {
+  const banner = error
+    ? `<div class="banner err">${esc(error)}</div>`
+    : (flash ? `<div class="banner ok">${esc(flash)}</div>` : "");
+
+  const act = (id, action, label, extra = "") =>
+    `<form method="post" action="/app"${extra}>` +
+    `<input type="hidden" name="id" value="${esc(id)}" />` +
+    `<input type="hidden" name="action" value="${action}" />` +
+    `<button class="btn${action === "delete" ? " danger" : ""}" type="submit">${label}</button></form>`;
+
   const rows = videos.map((v) => {
     const share = esc(v.shareURL || `${base}/v/${v.id}`);
     const status = v.disabled
@@ -253,30 +274,33 @@ export function renderApp(videos, { base = "" } = {}) {
       : `<span class="badge on">Live</span>`;
     const toggle = v.disabled ? "enable" : "disable";
     const toggleLabel = v.disabled ? "Enable link" : "Disable link";
+    const aiBadges =
+      (v.transcript ? `<span class="badge ai">📝 transcript</span>` : ``) +
+      (v.summary ? `<span class="badge ai">✨ summary</span>` : ``);
+    const summaryBlock = v.summary
+      ? `<div class="aiout"><b>AI summary</b><div class="aitext">${esc(v.summary)}</div></div>`
+      : ``;
     return `
-    <div class="card row approw">
-      <div class="grow">
-        <div class="t">${esc(v.title)}</div>
-        <div class="submeta">
-          <span>📅 ${esc(fmtDate(v.createdAt))}</span>
-          <span>⏱ ${esc(fmtDuration(v.durationSeconds))}</span>
-          <span>🖥 ${esc(v.captureMode || "")}</span>
-          ${status}
+    <div class="card">
+      <div class="row approw">
+        <div class="grow">
+          <div class="t">${esc(v.title)}</div>
+          <div class="submeta">
+            <span>📅 ${esc(fmtDate(v.createdAt))}</span>
+            <span>⏱ ${esc(fmtDuration(v.durationSeconds))}</span>
+            <span>🖥 ${esc(v.captureMode || "")}</span>
+            ${status}${aiBadges}
+          </div>
+          <div class="sharerow"><a href="/v/${esc(v.id)}" target="_blank" rel="noopener">${share}</a></div>
         </div>
-        <div class="sharerow"><a href="/v/${esc(v.id)}" target="_blank" rel="noopener">${share}</a></div>
+        <div class="actions">
+          ${act(v.id, toggle, toggleLabel)}
+          ${act(v.id, "transcribe", v.transcript ? "Re-transcribe" : "Transcribe", ` onsubmit="this.querySelector('button').textContent='Transcribing…'"`)}
+          ${act(v.id, "summarize", v.summary ? "Re-summarize" : "Summarize", ` onsubmit="this.querySelector('button').textContent='Summarizing…'"`)}
+          ${act(v.id, "delete", "Delete", ` onsubmit="return confirm('Delete this recording everywhere (cloud copy + share link)? This cannot be undone.')"`)}
+        </div>
       </div>
-      <div class="actions">
-        <form method="post" action="/app">
-          <input type="hidden" name="id" value="${esc(v.id)}" />
-          <input type="hidden" name="action" value="${toggle}" />
-          <button class="btn" type="submit">${toggleLabel}</button>
-        </form>
-        <form method="post" action="/app" onsubmit="return confirm('Delete this recording everywhere (cloud copy + share link)? This cannot be undone.')">
-          <input type="hidden" name="id" value="${esc(v.id)}" />
-          <input type="hidden" name="action" value="delete" />
-          <button class="btn danger" type="submit">Delete</button>
-        </form>
-      </div>
+      ${summaryBlock}
     </div>`;
   }).join("");
 
@@ -294,6 +318,7 @@ export function renderApp(videos, { base = "" } = {}) {
     <div class="spacer"></div>
     <div class="count">${videos.length} recording${videos.length === 1 ? "" : "s"}</div>
   </div>
+  ${banner}
   ${body}
   <footer>Your private library · only you can see this page</footer>
 </div></body></html>`;

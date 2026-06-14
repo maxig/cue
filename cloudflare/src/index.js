@@ -3,7 +3,7 @@
 //   Bindings (see wrangler.toml):
 //     env.DB     D1 database   (metadata, replaces db.json)
 //     env.MEDIA  R2 bucket     (the recorded video bytes)
-//     env.AI     Workers AI    (Whisper transcription, optional)
+//     env.AI     Workers AI    (Whisper transcription + Llama summaries)
 //
 // The HTTP API is identical to the Node server so the macOS app can point at
 // either one. The app uploads the video straight to R2 over the S3 API (SigV4);
@@ -29,6 +29,11 @@ const DEFAULT_MAX_BYTES = 9_000_000_000;
 
 // Default lifetime of a presigned media URL (override with MEDIA_URL_TTL).
 const DEFAULT_MEDIA_TTL = 1800; // 30 minutes
+
+// Workers AI text model for summaries (override with the SUMMARY_MODEL var).
+// 70B "fast" fp8 gives good summaries; switch to @cf/meta/llama-3.1-8b-instruct-fp8
+// to use fewer daily Neurons.
+const DEFAULT_SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 function json(data, init = {}) {
   return new Response(JSON.stringify(data), {
@@ -59,6 +64,7 @@ function rowToVideo(row) {
     createdAt: row.created_at,
     disabled: !!row.disabled,
     transcript: row.transcript || null,
+    summary: row.summary || null,
   };
 }
 
@@ -256,7 +262,15 @@ export default {
       if (txMatch && method === "POST") {
         const denied = await ownerError(request, env);
         if (denied) return denied;
-        return await transcribe(decodeURIComponent(txMatch[1]), url, env);
+        return await transcribeHTTP(decodeURIComponent(txMatch[1]), url, env);
+      }
+
+      // Summarize one recording (Workers AI / Llama) ----------------------
+      const sumMatch = pathname.match(/^\/api\/videos\/([^/]+)\/summarize$/);
+      if (sumMatch && method === "POST") {
+        const denied = await ownerError(request, env);
+        if (denied) return denied;
+        return await summarizeHTTP(decodeURIComponent(sumMatch[1]), env);
       }
 
       // Owner: disable / enable a share link ------------------------------
@@ -305,11 +319,16 @@ export default {
           "SELECT * FROM videos ORDER BY created_at DESC"
         ).all();
         const videos = (results || []).map((r) => decorate(request, env, rowToVideo(r)));
-        return html(renderApp(videos, { base: baseURL(request, env) }));
+        return html(renderApp(videos, {
+          base: baseURL(request, env),
+          flash: url.searchParams.get("flash") || "",
+          error: url.searchParams.get("error") || "",
+        }));
       }
 
-      // Owner dashboard actions (enable / disable / delete) via same-origin
-      // form POSTs — same Access/bearer gate, plus an origin check to block CSRF.
+      // Owner dashboard actions (enable/disable/transcribe/summarize/delete)
+      // via same-origin form POSTs — same Access/bearer gate, plus an origin
+      // check to block CSRF. Reports the outcome back via a ?flash / ?error.
       if (pathname === "/app" && method === "POST") {
         const denied = await ownerError(request, env);
         if (denied) return html(renderAppLocked(), denied.status);
@@ -321,12 +340,30 @@ export default {
         const form = await request.formData();
         const id = String(form.get("id") || "");
         const action = String(form.get("action") || "");
-        if (id && (action === "enable" || action === "disable")) {
-          await setDisabled(env, id, action === "disable");
-        } else if (id && action === "delete") {
-          await deleteVideo(env, id);
+        let flash = "", error = "";
+        try {
+          if (!id) throw new Error("missing id");
+          if (action === "enable" || action === "disable") {
+            const ok = await setDisabled(env, id, action === "disable");
+            flash = ok ? `Link ${action === "disable" ? "disabled" : "enabled"}.` : "Recording not found.";
+          } else if (action === "delete") {
+            flash = (await deleteVideo(env, id)) ? "Recording deleted." : "Recording not found.";
+          } else if (action === "transcribe" || action === "summarize") {
+            const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
+            if (!row) throw new Error("Recording not found.");
+            if (action === "transcribe") {
+              const { text } = await transcribeVideo(env, row, {});
+              flash = `Transcribed (${wordCount(text)} words).`;
+            } else {
+              await summarizeVideo(env, row);
+              flash = "Summary generated.";
+            }
+          }
+        } catch (e) {
+          error = String((e && e.message) || e);
         }
-        return Response.redirect(`${base}/app`, 303);
+        const q = error ? `?error=${encodeURIComponent(error)}` : (flash ? `?flash=${encodeURIComponent(flash)}` : "");
+        return Response.redirect(`${base}/app${q}`, 303);
       }
 
       // Web player page ---------------------------------------------------
@@ -425,40 +462,98 @@ async function serveFile(key, request, env) {
 
 // --- Transcription (Workers AI: Whisper Large v3 Turbo) ---------------------
 
-async function transcribe(id, url, env) {
-  const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
-  if (!row) return json({ error: "not found" }, { status: 404 });
+function wordCount(text) {
+  return text && text.trim() ? text.trim().split(/\s+/).length : 0;
+}
 
-  // Prefer the audio-only sidecar uploaded with the recording; ?key= overrides,
-  // and we fall back to the full video only if no audio sidecar exists.
-  const key = url.searchParams.get("key") || row.audio_key || row.object_key;
-  const lang = url.searchParams.get("lang") || undefined;
-
+// Run Whisper over an R2 object and return { text, vtt }. Throws on a missing or
+// too-large object.
+async function runWhisper(env, key, lang) {
   const head = await env.MEDIA.head(key);
-  if (!head) return json({ error: `object not found: ${key}` }, { status: 404 });
+  if (!head) throw new Error(`object not found: ${key}`);
   if (head.size > MAX_TRANSCRIBE_BYTES) {
-    return json({
-      error: `object is ${head.size} bytes; too large to transcribe in-Worker. ` +
-        `Export an audio-only file and retry with ?key=<audio-key>.`,
-    }, { status: 413 });
+    throw new Error(`audio is ${(head.size / 1e6).toFixed(0)} MB; too large to transcribe in-Worker (limit 100 MB).`);
   }
-
   const object = await env.MEDIA.get(key);
   const audio = arrayBufferToBase64(await object.arrayBuffer());
-
   const input = { audio };
   if (lang) input.language = lang;
   const result = await env.AI.run("@cf/openai/whisper-large-v3-turbo", input);
-
   const text = result?.text || "";
   const vtt = Array.isArray(result?.segments)
     ? result.segments.map((s) => s.vtt).filter(Boolean).join("\n") || null
     : null;
+  return { text, vtt };
+}
 
+// Transcribe a recording's audio sidecar (or ?key=) and persist the result.
+async function transcribeVideo(env, row, { key, lang } = {}) {
+  const objKey = key || row.audio_key || row.object_key;
+  const { text, vtt } = await runWhisper(env, objKey, lang);
   await env.DB.prepare("UPDATE videos SET transcript = ?, transcript_vtt = ? WHERE id = ?")
-    .bind(text, vtt, id).run();
+    .bind(text, vtt, row.id).run();
+  return { text, vtt };
+}
 
-  return json({ id, text, word_count: result?.word_count ?? null, vtt });
+// HTTP wrapper for POST /api/videos/:id/transcribe.
+async function transcribeHTTP(id, url, env) {
+  const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
+  if (!row) return json({ error: "not found" }, { status: 404 });
+  try {
+    const { text, vtt } = await transcribeVideo(env, row, {
+      key: url.searchParams.get("key") || undefined,
+      lang: url.searchParams.get("lang") || undefined,
+    });
+    return json({ id, text, word_count: wordCount(text), vtt });
+  } catch (e) {
+    return json({ error: String((e && e.message) || e) }, { status: 500 });
+  }
+}
+
+// --- Summary (Workers AI: Llama) --------------------------------------------
+
+// Summarize a recording. Auto-transcribes first if no transcript exists yet,
+// then asks the text model for a short overview + key points. Persists `summary`.
+async function summarizeVideo(env, row) {
+  let transcript = row.transcript;
+  if (!transcript) {
+    const { text } = await transcribeVideo(env, row, {});
+    transcript = text;
+  }
+  if (!transcript || !transcript.trim()) {
+    throw new Error("nothing to summarize — no transcript (is there audio in this recording?).");
+  }
+  const model = env.SUMMARY_MODEL || DEFAULT_SUMMARY_MODEL;
+  const result = await env.AI.run(model, {
+    messages: [
+      {
+        role: "system",
+        content:
+          "You summarize screen-recording transcripts for a video sharing page. " +
+          "Reply in plain text: first a 2-3 sentence overview, then a blank line, then " +
+          "'Key points:' followed by 3-5 short bullets each starting with '- '. " +
+          "Be concise and factual; never invent anything that isn't in the transcript.",
+      },
+      { role: "user", content: `Transcript:\n\n${transcript.slice(0, 12000)}` },
+    ],
+    max_tokens: 512,
+  });
+  const summary = (result?.response || "").trim();
+  if (!summary) throw new Error("the summary model returned nothing.");
+  await env.DB.prepare("UPDATE videos SET summary = ? WHERE id = ?").bind(summary, row.id).run();
+  return summary;
+}
+
+// HTTP wrapper for POST /api/videos/:id/summarize.
+async function summarizeHTTP(id, env) {
+  const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
+  if (!row) return json({ error: "not found" }, { status: 404 });
+  try {
+    const summary = await summarizeVideo(env, row);
+    return json({ id, summary });
+  } catch (e) {
+    return json({ error: String((e && e.message) || e) }, { status: 500 });
+  }
 }
 
 // --- Owner actions / storage cap --------------------------------------------
