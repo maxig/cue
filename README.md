@@ -222,8 +222,7 @@ can develop against either.
 
 ## 📄 License
 
-No license file is committed yet — **add one before publishing** (MIT is a common
-choice for a project like this). Until then, all rights reserved by the author.
+[MIT](LICENSE) © 2026 Maksim Hardziyenak.
 
 ## 🙏 Acknowledgements
 
