@@ -71,6 +71,7 @@ function rowToVideo(row) {
     createdAt: row.created_at,
     disabled: !!row.disabled,
     transcript: row.transcript || null,
+    transcriptVtt: row.transcript_vtt || null,
     summary: row.summary || null,
   };
 }
