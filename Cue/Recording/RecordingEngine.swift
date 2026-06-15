@@ -287,6 +287,25 @@ final class RecordingEngine: ObservableObject {
             ?? cameraName.map { folder.appendingPathComponent($0) }
         let thumbName = await generateThumbnail(id: id, sourceURL: thumbSource)
 
+        // Persist the compose inputs so the clip can be re-rendered later
+        // (post-record camera reposition / cinematic effects) from the raw
+        // tracks, without re-recording.
+        let plan = CompositionPlan(
+            bubbleShape: bubbleShape,
+            mirrored: cameraMirrored,
+            cameraBackground: cameraBackground,
+            corner: cameraCorner,
+            padding: screenPadding,
+            background: canvasBackground,
+            aspectRatio: aspectMode.ratio.map { Double($0) },
+            cameraStartOffset: cameraOffset,
+            leadTrim: leadTrim,
+            cameraHiddenRanges: cameraDisabledRanges,
+            screenPauseSpans: screenPauseSpans,
+            cameraPauseSpans: cameraPauseSpans,
+            cameraPlacement: nil
+        )
+
         let recording = Recording(
             id: id,
             title: Self.defaultTitle(),
@@ -299,7 +318,8 @@ final class RecordingEngine: ObservableObject {
             width: size == .zero ? nil : Int(size.width),
             height: size == .zero ? nil : Int(size.height),
             captureMode: mode,
-            share: .local
+            share: .local,
+            plan: plan
         )
         store.upsert(recording)
         reset()

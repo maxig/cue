@@ -9,6 +9,38 @@ enum ShareStatus: Codable, Hashable {
     case failed(reason: String)
 }
 
+/// Where the camera picture-in-picture sits in the composited frame. Normalized
+/// to the render size (origin top-left); `size` is the bubble diameter as a
+/// fraction of the frame width. When a recording has no placement the compositor
+/// falls back to the corner from its `CompositionPlan`.
+struct CameraPlacement: Codable, Hashable {
+    var centerX: Double    // 0…1, left → right
+    var centerY: Double    // 0…1, top → bottom
+    var size: Double       // diameter ÷ frame width
+
+    static let `default` = CameraPlacement(centerX: 0.13, centerY: 0.84, size: 0.22)
+}
+
+/// Everything needed to re-compose a recording's `final.mp4` from its retained
+/// raw tracks. Captured at first compose so post-record edits (camera reposition,
+/// cinematic effects) can re-render without re-recording.
+struct CompositionPlan: Codable, Hashable {
+    var bubbleShape: CameraBubbleShape
+    var mirrored: Bool
+    var cameraBackground: CameraBackground
+    var corner: CameraCorner
+    var padding: Double
+    var background: CanvasBackground
+    var aspectRatio: Double?
+    var cameraStartOffset: Double?
+    var leadTrim: Double?
+    var cameraHiddenRanges: [ClosedRange<Double>]
+    var screenPauseSpans: [ClosedRange<Double>]
+    var cameraPauseSpans: [ClosedRange<Double>]
+    /// Post-record camera placement override. Nil = use `corner`.
+    var cameraPlacement: CameraPlacement?
+}
+
 /// Metadata for one captured session. Media files live in a per-recording
 /// folder; only relative file names are persisted so the library survives the
 /// app's support directory moving.
@@ -36,6 +68,10 @@ struct Recording: Identifiable, Codable, Hashable {
     var captureMode: CaptureMode
     var share: ShareStatus
 
+    /// Saved compose inputs, enabling post-record re-rendering (camera reposition
+    /// + cinematic effects). Nil for entries recorded before this existed.
+    var plan: CompositionPlan?
+
     init(id: UUID = UUID(),
          title: String,
          createdAt: Date = .now,
@@ -48,7 +84,8 @@ struct Recording: Identifiable, Codable, Hashable {
          width: Int? = nil,
          height: Int? = nil,
          captureMode: CaptureMode = .screen,
-         share: ShareStatus = .local) {
+         share: ShareStatus = .local,
+         plan: CompositionPlan? = nil) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
@@ -62,6 +99,7 @@ struct Recording: Identifiable, Codable, Hashable {
         self.height = height
         self.captureMode = captureMode
         self.share = share
+        self.plan = plan
     }
 
     var shareURL: URL? {
