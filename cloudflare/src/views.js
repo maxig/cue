@@ -308,6 +308,7 @@ function renderOwnerBar(v) {
       ${act(toggle, toggleLabel)}
       ${act("transcribe", v.transcript ? "Re-transcribe" : "Transcribe", false, ` onsubmit="this.querySelector('button').textContent='Transcribing…'"`)}
       ${act("summarize", v.summary ? "Re-summarize" : "Summarize", false, ` onsubmit="this.querySelector('button').textContent='Summarizing…'"`)}
+      ${act("declutter", "Remove fillers", false, ` onsubmit="this.querySelector('button').textContent='Cleaning…'"`)}
       ${act("delete", "Delete", true, ` onsubmit="return confirm('Delete this recording everywhere (cloud copy + share link)? This cannot be undone.')"`)}
       <a class="btn" href="/v/${esc(v.id)}" target="_blank" rel="noopener">Open public page ↗</a>
     </div>
@@ -550,6 +551,7 @@ export function renderApp(videos, { base = "", flash = "", error = "" } = {}) {
           ${act(v.id, toggle, toggleLabel)}
           ${act(v.id, "transcribe", v.transcript ? "Re-transcribe" : "Transcribe", ` onsubmit="this.querySelector('button').textContent='Transcribing…'"`)}
           ${act(v.id, "summarize", v.summary ? "Re-summarize" : "Summarize", ` onsubmit="this.querySelector('button').textContent='Summarizing…'"`)}
+          ${act(v.id, "declutter", "Remove fillers", ` onsubmit="this.querySelector('button').textContent='Cleaning…'"`)}
           ${act(v.id, "delete", "Delete", ` onsubmit="return confirm('Delete this recording everywhere (cloud copy + share link)? This cannot be undone.')"`)}
         </div>
       </div>
