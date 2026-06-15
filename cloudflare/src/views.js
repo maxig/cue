@@ -503,12 +503,34 @@ const APP_CSS = `
   .banner { padding: 10px 14px; border-radius: 12px; margin-bottom: 14px; font-size: 13px; font-weight: 600; }
   .banner.ok { background: rgba(46,194,107,0.16); color: #2ec26b; }
   .banner.err { background: rgba(255,90,90,0.14); color: #ff8a8a; }
+  .searchbar { display: flex; align-items: center; gap: 8px; flex: 1; max-width: 520px; margin: 0 8px; }
+  .searchbar input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid var(--panel-border); color: var(--text);
+                     border-radius: 10px; padding: 7px 12px; font: inherit; }
+  .searchbar input::placeholder { color: var(--muted); }
+  .searchbar input:focus { outline: none; border-color: rgba(10,132,255,0.6); }
+  .snippet { margin-top: 6px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .snippet mark { background: rgba(10,132,255,0.30); color: var(--text); border-radius: 3px; padding: 0 2px; }
 `;
+
+// Wrap occurrences of the query in <mark>, escaping everything else (raw text
+// in → safe HTML out). ASCII case-insensitive, which matches the SQL LIKE scan.
+function highlightSnippet(text, q) {
+  if (!q) return esc(text);
+  const lower = String(text).toLowerCase();
+  const ql = q.toLowerCase();
+  let out = "", i = 0, idx = lower.indexOf(ql);
+  while (idx !== -1) {
+    out += esc(text.slice(i, idx)) + "<mark>" + esc(text.slice(idx, idx + q.length)) + "</mark>";
+    i = idx + q.length;
+    idx = lower.indexOf(ql, i);
+  }
+  return out + esc(text.slice(i));
+}
 
 // Private owner dashboard at /app — lists every recording with Enable/Disable
 // and Delete controls. Reachable only behind Cloudflare Access (or the bearer
 // token); the Worker fails closed otherwise.
-export function renderApp(videos, { base = "", flash = "", error = "" } = {}) {
+export function renderApp(videos, { base = "", flash = "", error = "", q = "" } = {}) {
   const banner = error
     ? `<div class="banner err">${esc(error)}</div>`
     : (flash ? `<div class="banner ok">${esc(flash)}</div>` : "");
@@ -544,6 +566,7 @@ export function renderApp(videos, { base = "", flash = "", error = "" } = {}) {
             ${status}${aiBadges}
           </div>
           <div class="sharerow"><a href="/v/${esc(v.id)}" target="_blank" rel="noopener">${share}</a></div>
+          ${v.snippet ? `<div class="snippet">${highlightSnippet(v.snippet, q)}</div>` : ``}
         </div>
         <div class="actions">
           <a class="btn" href="/app/v/${esc(v.id)}">Manage</a>
@@ -559,7 +582,9 @@ export function renderApp(videos, { base = "", flash = "", error = "" } = {}) {
 
   const body = videos.length
     ? `<div class="list">${rows}</div>`
-    : `<div class="empty">No recordings yet. Record something in the Cue app and click <b>Upload to Cloud</b>.</div>`;
+    : (q
+        ? `<div class="empty">No recordings match “${esc(q)}”.</div>`
+        : `<div class="empty">No recordings yet. Record something in the Cue app and click <b>Upload to Cloud</b>.</div>`);
 
   return `<!doctype html>
 <html lang="en"><head>
@@ -568,8 +593,13 @@ export function renderApp(videos, { base = "", flash = "", error = "" } = {}) {
 <div class="wrap">
   <div class="topbar">
     <div class="brand"><div class="logo"></div> Cue</div>
+    <form class="searchbar" method="get" action="/app">
+      <input type="search" name="q" value="${esc(q)}" placeholder="Search titles & transcripts…" autocomplete="off" />
+      <button class="btn" type="submit">Search</button>
+      ${q ? `<a class="btn" href="/app">Clear</a>` : ``}
+    </form>
     <div class="spacer"></div>
-    <div class="count">${videos.length} recording${videos.length === 1 ? "" : "s"}</div>
+    <div class="count">${q ? `${videos.length} result${videos.length === 1 ? "" : "s"}` : `${videos.length} recording${videos.length === 1 ? "" : "s"}`}</div>
   </div>
   ${banner}
   ${body}
