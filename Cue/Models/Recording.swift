@@ -9,6 +9,24 @@ enum ShareStatus: Codable, Hashable {
     case failed(reason: String)
 }
 
+/// One pointer sample or click. `t` is content-timeline seconds (lead-in
+/// trimmed, pauses excised — matching the composer's frame time); `x`/`y` are
+/// normalized to the captured display (0…1, top-left origin).
+struct MouseSample: Codable, Hashable {
+    var t: Double
+    var x: Double
+    var y: Double
+}
+
+/// Captured pointer activity for a display recording, consumed by upcoming
+/// cinematic effects (smooth cursor from `moves`, ripples + zoom from `clicks`).
+struct MouseActivity: Codable, Hashable {
+    var moves: [MouseSample]
+    var clicks: [MouseSample]
+    static let empty = MouseActivity(moves: [], clicks: [])
+    var isEmpty: Bool { moves.isEmpty && clicks.isEmpty }
+}
+
 /// Where the camera picture-in-picture sits in the composited frame. Normalized
 /// to the render size (origin top-left); `size` is the bubble diameter as a
 /// fraction of the frame width. When a recording has no placement the compositor
@@ -39,6 +57,9 @@ struct CompositionPlan: Codable, Hashable {
     var cameraPauseSpans: [ClosedRange<Double>]
     /// Post-record camera placement override. Nil = use `corner`.
     var cameraPlacement: CameraPlacement?
+    /// Sidecar JSON of captured pointer activity (clicks + path) for cinematic
+    /// effects. Nil when nothing was captured (e.g. window / camera-only).
+    var activityFileName: String?
 }
 
 /// Metadata for one captured session. Media files live in a per-recording

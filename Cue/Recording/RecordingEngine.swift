@@ -13,6 +13,10 @@ final class RecordingEngine: ObservableObject {
     private let store: RecordingStore
     private let camera: CameraEngine
     private let screenRecorder = ScreenRecorder()
+    private let mouseActivity = MouseActivityRecorder()
+    /// Frame of the display being captured (global, bottom-left-origin points),
+    /// used to normalize pointer activity. Nil for window / camera-only.
+    private var captureDisplayFrame: CGRect?
 
     private var currentID: UUID?
     private var startDate: Date?
@@ -85,6 +89,16 @@ final class RecordingEngine: ObservableObject {
         self.cameraDisabledRanges = []
         self.cameraDisableStart = nil
         self.cameraIsOn = true
+
+        // Capture the pointer path + clicks for display recordings (consumed by
+        // the cinematic post-effects). Window / camera-only modes are skipped.
+        captureDisplayFrame = nil
+        if config.mode != .window, config.mode != .cameraOnly,
+           let displayID = config.display?.scDisplay.displayID,
+           let frame = Self.screenFrame(for: displayID) {
+            captureDisplayFrame = frame
+            mouseActivity.start()
+        }
 
         let micID = (config.microphoneEnabled && config.microphone?.isNone == false)
             ? config.microphone?.id : nil
@@ -182,6 +196,7 @@ final class RecordingEngine: ObservableObject {
     /// and deletes its files without composing anything.
     func cancel() async {
         guard currentID != nil else { return }
+        mouseActivity.cancel()
         if usedScreen { _ = await screenRecorder.stop() }
         if usedCamera { await camera.stopRecording() }
         if let folder { try? FileManager.default.removeItem(at: folder) }
@@ -287,6 +302,20 @@ final class RecordingEngine: ObservableObject {
             ?? cameraName.map { folder.appendingPathComponent($0) }
         let thumbName = await generateThumbnail(id: id, sourceURL: thumbSource)
 
+        // Capture the pointer path + clicks (display recordings) for the upcoming
+        // cinematic effects, written as a sidecar next to the raw tracks.
+        var activityFileName: String?
+        if let activity = mouseActivity.finish(contentStartAnchor: contentStartAnchor,
+                                               pauseSpansHost: pauseSpansHost,
+                                               displayFrame: captureDisplayFrame ?? .zero) {
+            let activityURL = folder.appendingPathComponent("activity.json")
+            if let data = try? JSONEncoder().encode(activity) {
+                try? data.write(to: activityURL)
+                activityFileName = "activity.json"
+                NSLog("Cue captured pointer activity: \(activity.clicks.count) clicks, \(activity.moves.count) moves")
+            }
+        }
+
         // Persist the compose inputs so the clip can be re-rendered later
         // (post-record camera reposition / cinematic effects) from the raw
         // tracks, without re-recording.
@@ -303,7 +332,8 @@ final class RecordingEngine: ObservableObject {
             cameraHiddenRanges: cameraDisabledRanges,
             screenPauseSpans: screenPauseSpans,
             cameraPauseSpans: cameraPauseSpans,
-            cameraPlacement: nil
+            cameraPlacement: nil,
+            activityFileName: activityFileName
         )
 
         let recording = Recording(
@@ -335,6 +365,20 @@ final class RecordingEngine: ObservableObject {
     }
 
     // MARK: Helpers
+
+    /// Frame of the display with `displayID` in the global, bottom-left-origin
+    /// point space used by `NSEvent.mouseLocation`, so pointer samples normalize
+    /// correctly. Nil if no matching NSScreen is found.
+    static func screenFrame(for displayID: CGDirectDisplayID) -> CGRect? {
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        for screen in NSScreen.screens {
+            if let n = screen.deviceDescription[key] as? NSNumber,
+               CGDirectDisplayID(n.uint32Value) == displayID {
+                return screen.frame
+            }
+        }
+        return nil
+    }
 
     private func makeFilterAndSize(config: CaptureConfiguration) async -> (Int, Int, SCContentFilter)? {
         switch config.mode {
