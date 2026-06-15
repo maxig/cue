@@ -61,7 +61,8 @@ final class RecordingEngine: ObservableObject {
                corner: CameraCorner,
                padding: Double,
                background: CanvasBackground,
-               aspectMode: AspectRatioMode) async throws {
+               aspectMode: AspectRatioMode,
+               fps: Int = 30) async throws {
         guard currentID == nil else { throw RecordingError.alreadyRecording }
 
         let id = UUID()
@@ -99,7 +100,7 @@ final class RecordingEngine: ObservableObject {
                 filter: filter,
                 width: width,
                 height: height,
-                fps: 30,
+                fps: fps,
                 captureSystemAudio: config.captureSystemAudio,
                 captureMicrophone: micID != nil,
                 microphoneDeviceID: micID,

@@ -145,6 +145,7 @@ final class Preferences: ObservableObject {
         static let lastMicID = "cue.device.lastMicID"
         static let lastMode = "cue.capture.lastMode"
         static let aspectMode = "cue.canvas.aspectMode"
+        static let captureFPS = "cue.capture.fps"
     }
 
     @Published var cameraBubbleShape: CameraBubbleShape {
@@ -188,6 +189,11 @@ final class Preferences: ObservableObject {
     @Published var aspectMode: AspectRatioMode {
         didSet { defaults.set(aspectMode.rawValue, forKey: Key.aspectMode) }
     }
+    /// Screen capture frame rate. 30 fps by default; 60 fps for smoother motion
+    /// (larger files). Only 30 or 60 are offered.
+    @Published var captureFPS: Int {
+        didSet { defaults.set(captureFPS, forKey: Key.captureFPS) }
+    }
     @Published var onboardingDone: Bool {
         didSet { defaults.set(onboardingDone, forKey: Key.onboardingDone) }
     }
@@ -216,6 +222,7 @@ final class Preferences: ObservableObject {
         screenPadding = min(max(pad, 0), 0.08)
         canvasBackground = CanvasBackground(rawValue: defaults.string(forKey: Key.background) ?? "") ?? .none
         aspectMode = AspectRatioMode(rawValue: defaults.string(forKey: Key.aspectMode) ?? "") ?? .sixteenNine
+        captureFPS = defaults.integer(forKey: Key.captureFPS) == 60 ? 60 : 30
         onboardingDone = defaults.bool(forKey: Key.onboardingDone)
         lastCameraID = defaults.string(forKey: Key.lastCameraID)
         lastMicrophoneID = defaults.string(forKey: Key.lastMicID)
