@@ -35,6 +35,13 @@ const DEFAULT_MEDIA_TTL = 1800; // 30 minutes
 // to use fewer daily Neurons.
 const DEFAULT_SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
+// Emoji reactions a viewer may post. Anything outside this allowlist is rejected,
+// so the public reactions endpoint can never store arbitrary strings.
+const REACTIONS = ["👍", "🎉", "😂", "❤️", "👀", "🔥"];
+
+// Public engagement responses are per-viewer and must never be cached.
+const NO_STORE = { "cache-control": "no-store" };
+
 function json(data, init = {}) {
   return new Response(JSON.stringify(data), {
     status: init.status || 200,
@@ -309,6 +316,84 @@ export default {
         return json({ deleted: id });
       }
 
+      // Owner per-video view (browser) — the share page plus owner actions and
+      // comment moderation. Lives under /app so the existing Cloudflare Access
+      // app (which protects /app and all its subpaths) already covers it; the
+      // Worker re-verifies via ownerError so it's fail-closed everywhere.
+      const appVideoMatch = pathname.match(/^\/app\/v\/([^/]+)$/);
+      if (appVideoMatch && method === "GET") {
+        const denied = await ownerError(request, env);
+        if (denied) return html(renderAppLocked(), denied.status);
+        const id = decodeURIComponent(appVideoMatch[1]);
+        const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
+        if (!row) return html(renderAppLocked("Recording not found."), 404);
+        const v = rowToVideo(row);
+        const dv = decorate(request, env, v);
+        dv.mediaURL = await ownerMediaURL(request, env, v); // plays even while disabled
+        const [counts, comments] = await Promise.all([reactionCounts(env, id), listComments(env, id)]);
+        return html(renderPlayer(dv, {
+          owner: true,
+          counts,
+          comments,
+          flash: url.searchParams.get("flash") || "",
+          error: url.searchParams.get("error") || "",
+        }));
+      }
+
+      // Owner per-video actions (enable/disable/transcribe/summarize/delete +
+      // comment moderation) via same-origin form POSTs — same Access/bearer gate
+      // as /app plus an Origin check to block CSRF. Redirects back with a flash.
+      if (appVideoMatch && method === "POST") {
+        const denied = await ownerError(request, env);
+        if (denied) return html(renderAppLocked(), denied.status);
+        const base = baseURL(request, env);
+        const origin = request.headers.get("origin");
+        if (origin && origin.replace(/\/$/, "") !== base) {
+          return html(renderAppLocked("Request blocked (bad origin)."), 403);
+        }
+        const id = decodeURIComponent(appVideoMatch[1]);
+        const form = await request.formData();
+        const action = String(form.get("action") || "");
+        let flash = "", error = "", gone = false;
+        try {
+          const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
+          if (!row) throw new Error("Recording not found.");
+          if (action === "enable" || action === "disable") {
+            await setDisabled(env, id, action === "disable");
+            flash = `Link ${action === "disable" ? "disabled" : "enabled"}.`;
+          } else if (action === "delete") {
+            await deleteVideo(env, id);
+            gone = true;
+            flash = "Recording deleted.";
+          } else if (action === "delete-comment") {
+            const ok = await deleteComment(env, id, String(form.get("commentId") || ""));
+            flash = ok ? "Comment deleted." : "Comment not found.";
+          } else if (action === "transcribe") {
+            const { text } = await transcribeVideo(env, row, {});
+            flash = `Transcribed (${wordCount(text)} words).`;
+          } else if (action === "summarize") {
+            await summarizeVideo(env, row);
+            flash = "Summary generated.";
+          } else {
+            throw new Error("unknown action");
+          }
+        } catch (e) {
+          error = String((e && e.message) || e);
+        }
+        const q = error ? `?error=${encodeURIComponent(error)}` : (flash ? `?flash=${encodeURIComponent(flash)}` : "");
+        // After a delete the video is gone → send the owner back to the library.
+        const dest = gone ? `${base}/app${q}` : `${base}/app/v/${encodeURIComponent(id)}${q}`;
+        return Response.redirect(dest, 303);
+      }
+
+      // Owner media passthrough — like /file, but serves a known object even
+      // while its link is disabled, so the owner can preview from /app/v/:id.
+      if (pathname.startsWith("/app/file/") && (method === "GET" || method === "HEAD")) {
+        const denied = await ownerError(request, env);
+        if (denied) return new Response("unauthorized", { status: denied.status, headers: CORS });
+        return await serveFile(decodeURIComponent(pathname.slice("/app/file/".length)), request, env, { ownerView: true });
+      }
+
       // Owner dashboard (browser) — lists every recording with controls. Gated
       // by Cloudflare Access (log in with your Cloudflare identity) or the
       // bearer token. Never public: fail-closed if neither is satisfied.
@@ -366,6 +451,30 @@ export default {
         return Response.redirect(`${base}/app${q}`, 303);
       }
 
+      // Public engagement (reactions + comments) — open by design (anyone with
+      // the link), but only for a known, ENABLED recording. No auth, no cookies.
+      const reactMatch = pathname.match(/^\/api\/public\/videos\/([^/]+)\/reactions$/);
+      if (reactMatch && method === "POST") {
+        return await handleReaction(decodeURIComponent(reactMatch[1]), request, env);
+      }
+      const addCommentMatch = pathname.match(/^\/api\/public\/videos\/([^/]+)\/comments$/);
+      if (addCommentMatch && method === "POST") {
+        return await handleAddComment(decodeURIComponent(addCommentMatch[1]), request, env);
+      }
+      const delCommentMatch = pathname.match(/^\/api\/public\/videos\/([^/]+)\/comments\/([^/]+)$/);
+      if (delCommentMatch && method === "DELETE") {
+        return await handleDeleteComment(
+          decodeURIComponent(delCommentMatch[1]),
+          decodeURIComponent(delCommentMatch[2]),
+          request,
+          env
+        );
+      }
+      const engageMatch = pathname.match(/^\/api\/public\/videos\/([^/]+)\/engagement$/);
+      if (engageMatch && method === "GET") {
+        return await handleEngagement(decodeURIComponent(engageMatch[1]), url, request, env);
+      }
+
       // Web player page ---------------------------------------------------
       const vMatch = pathname.match(/^\/v\/([^/]+)$/);
       if (vMatch && method === "GET") {
@@ -376,7 +485,8 @@ export default {
         const v = rowToVideo(row);
         const dv = decorate(request, env, v);
         dv.mediaURL = await resolveMediaURL(request, env, v);
-        return html(renderPlayer(dv));
+        const [counts, comments] = await Promise.all([reactionCounts(env, sid), listComments(env, sid)]);
+        return html(renderPlayer(dv, { counts, comments }));
       }
 
       // Media passthrough (Range-aware) — used when MEDIA_PUBLIC_BASE is unset
@@ -398,18 +508,20 @@ export default {
 
 // --- R2 streaming with HTTP Range (so the <video> tag can seek) --------------
 
-async function serveFile(key, request, env) {
+async function serveFile(key, request, env, opts = {}) {
   if (!key) return new Response("missing key", { status: 400, headers: CORS });
 
   // Fail closed: only serve bytes that belong to a known recording whose share
   // link is enabled. An unknown key (no row) or a disabled link is refused, so
   // the bucket is never a public file server even if an object key is guessed.
   // (A bucket custom domain would bypass the Worker — delete to fully revoke.)
+  // The owner preview path (opts.ownerView, behind ownerError) skips the
+  // disabled gate so the owner can still watch their own paused recordings.
   const owner = await env.DB.prepare(
     "SELECT disabled FROM videos WHERE object_key = ?1 OR audio_key = ?1"
   ).bind(key).first();
   if (!owner) return new Response("not found", { status: 404, headers: CORS });
-  if (owner.disabled) return new Response("disabled", { status: 410, headers: CORS });
+  if (!opts.ownerView && owner.disabled) return new Response("disabled", { status: 410, headers: CORS });
 
   if (request.method === "HEAD") {
     const head = await env.MEDIA.head(key);
@@ -574,12 +686,19 @@ async function deleteVideo(env, id) {
   if (!row) return false;
   await deleteObjects(env, row);
   await env.DB.prepare("DELETE FROM videos WHERE id = ?").bind(id).run();
+  await deleteEngagement(env, id);
   return true;
 }
 
 async function deleteObjects(env, row) {
   const keys = [row.object_key, row.audio_key].filter(Boolean);
   if (keys.length) await env.MEDIA.delete(keys);
+}
+
+// Remove a recording's comments + reactions (D1 has no enforced cascade).
+async function deleteEngagement(env, id) {
+  await env.DB.prepare("DELETE FROM comments WHERE video_id = ?").bind(id).run();
+  await env.DB.prepare("DELETE FROM reactions WHERE video_id = ?").bind(id).run();
 }
 
 // Evict oldest recordings until total R2 usage is back under the cap. Never
@@ -598,8 +717,155 @@ async function enforceStorageCap(env, keepId) {
     if (total <= cap) break;
     await deleteObjects(env, row);
     await env.DB.prepare("DELETE FROM videos WHERE id = ?").bind(row.id).run();
+    await deleteEngagement(env, row.id);
     total -= Number(row.bytes || 0);
   }
+}
+
+// --- Engagement: reactions + comments ---------------------------------------
+
+// Owner preview media URL — presigned (private bucket) if configured, else the
+// owner-gated /app/file proxy, which (unlike /file) serves a disabled recording.
+async function ownerMediaURL(request, env, video) {
+  const cfg = presignConfig(env);
+  if (cfg) return await presignedURL(cfg, video.objectKey);
+  return `${baseURL(request, env)}/app/file/${video.objectKey}`;
+}
+
+// Public-engagement guard: returns an error Response unless the recording exists
+// and its share link is enabled (so viewers can only engage with live videos).
+async function enabledVideoError(env, id) {
+  const row = await env.DB.prepare("SELECT disabled FROM videos WHERE id = ?").bind(id).first();
+  if (!row) return json({ error: "not found" }, { status: 404, headers: NO_STORE });
+  if (row.disabled) return json({ error: "link disabled" }, { status: 410, headers: NO_STORE });
+  return null;
+}
+
+// Anonymous browser id from the client (localStorage). Constrained so it can't
+// carry markup or unbounded data into the DB. Returns null if malformed.
+function cleanViewerId(v) {
+  const s = String(v || "").trim();
+  return /^[A-Za-z0-9_-]{1,64}$/.test(s) ? s : null;
+}
+
+async function reactionCounts(env, id) {
+  const { results } = await env.DB.prepare(
+    "SELECT emoji, COUNT(*) AS n FROM reactions WHERE video_id = ? GROUP BY emoji"
+  ).bind(id).all();
+  const counts = {};
+  for (const r of results || []) counts[r.emoji] = Number(r.n) || 0;
+  return counts;
+}
+
+async function viewerReactions(env, id, viewerId) {
+  if (!viewerId) return [];
+  const { results } = await env.DB.prepare(
+    "SELECT emoji FROM reactions WHERE video_id = ? AND viewer_id = ?"
+  ).bind(id, viewerId).all();
+  return (results || []).map((r) => r.emoji);
+}
+
+// Public comment shape. Deliberately omits viewer_id: it's a stable pseudonymous
+// id that would let anyone correlate/spoof comments if exposed in the page. The
+// "delete my own" affordance is tracked client-side (localStorage id set); the
+// server reads the stored viewer_id directly when authorizing a delete.
+async function listComments(env, id, limit = 500) {
+  const { results } = await env.DB.prepare(
+    "SELECT id, author, body, ts_seconds, created_at FROM comments WHERE video_id = ? ORDER BY created_at ASC LIMIT ?"
+  ).bind(id, limit).all();
+  return (results || []).map((r) => ({
+    id: r.id,
+    author: r.author,
+    body: r.body,
+    tsSeconds: r.ts_seconds == null ? null : Number(r.ts_seconds),
+    createdAt: r.created_at,
+  }));
+}
+
+// POST /api/public/videos/:id/reactions { emoji, viewerId } — toggles one emoji.
+async function handleReaction(id, request, env) {
+  const err = await enabledVideoError(env, id);
+  if (err) return err;
+  const body = await request.json().catch(() => ({}));
+  const emoji = String(body.emoji || "");
+  const viewerId = cleanViewerId(body.viewerId);
+  if (!REACTIONS.includes(emoji)) return json({ error: "unsupported reaction" }, { status: 400, headers: NO_STORE });
+  if (!viewerId) return json({ error: "missing viewerId" }, { status: 400, headers: NO_STORE });
+
+  const existing = await env.DB.prepare(
+    "SELECT id FROM reactions WHERE video_id = ? AND emoji = ? AND viewer_id = ?"
+  ).bind(id, emoji, viewerId).first();
+  if (existing) {
+    await env.DB.prepare("DELETE FROM reactions WHERE id = ?").bind(existing.id).run();
+  } else {
+    await env.DB.prepare(
+      "INSERT INTO reactions (id, video_id, emoji, viewer_id, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(crypto.randomUUID(), id, emoji, viewerId, new Date().toISOString()).run();
+  }
+  const [counts, mine] = await Promise.all([reactionCounts(env, id), viewerReactions(env, id, viewerId)]);
+  return json({ counts, mine }, { headers: NO_STORE });
+}
+
+// POST /api/public/videos/:id/comments { author, body, viewerId, tsSeconds }.
+async function handleAddComment(id, request, env) {
+  const err = await enabledVideoError(env, id);
+  if (err) return err;
+  const b = await request.json().catch(() => ({}));
+  const author = String(b.author || "").trim().slice(0, 60) || "Anonymous";
+  const text = String(b.body || "").trim().slice(0, 2000);
+  const viewerId = cleanViewerId(b.viewerId);
+  let ts = Number(b.tsSeconds);
+  ts = Number.isFinite(ts) && ts >= 0 ? ts : null;
+  if (!text) return json({ error: "empty comment" }, { status: 400, headers: NO_STORE });
+
+  const comment = {
+    id: crypto.randomUUID(),
+    author,
+    body: text,
+    tsSeconds: ts,
+    createdAt: new Date().toISOString(),
+  };
+  await env.DB.prepare(
+    "INSERT INTO comments (id, video_id, author, body, viewer_id, ts_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).bind(comment.id, id, author, text, viewerId, ts, comment.createdAt).run();
+  return json({ comment }, { headers: NO_STORE }); // viewerId intentionally not echoed
+}
+
+// DELETE /api/public/videos/:id/comments/:cid?viewer=... — the comment's author
+// (matching viewerId) or the owner (bearer/Access) may remove it.
+async function handleDeleteComment(id, cid, request, env) {
+  const url = new URL(request.url);
+  const viewerId = cleanViewerId(url.searchParams.get("viewer"));
+  const row = await env.DB.prepare("SELECT viewer_id FROM comments WHERE id = ? AND video_id = ?")
+    .bind(cid, id).first();
+  if (!row) return json({ error: "not found" }, { status: 404, headers: NO_STORE });
+  const isOwner = !(await ownerError(request, env));
+  const isAuthor = !!(viewerId && row.viewer_id && timingSafeEqual(viewerId, row.viewer_id));
+  if (!isOwner && !isAuthor) return json({ error: "forbidden" }, { status: 403, headers: NO_STORE });
+  await env.DB.prepare("DELETE FROM comments WHERE id = ?").bind(cid).run();
+  return json({ deleted: cid }, { headers: NO_STORE });
+}
+
+// GET /api/public/videos/:id/engagement?viewer=... — counts + this viewer's
+// reactions + the comment list (for clients that refresh without a reload).
+async function handleEngagement(id, url, request, env) {
+  const err = await enabledVideoError(env, id);
+  if (err) return err;
+  const viewerId = cleanViewerId(url.searchParams.get("viewer"));
+  const [counts, mine, comments] = await Promise.all([
+    reactionCounts(env, id),
+    viewerReactions(env, id, viewerId),
+    listComments(env, id),
+  ]);
+  return json({ counts, mine, comments }, { headers: NO_STORE });
+}
+
+// Owner moderation: delete a single comment that belongs to a video.
+async function deleteComment(env, id, cid) {
+  if (!cid) return false;
+  const res = await env.DB.prepare("DELETE FROM comments WHERE id = ? AND video_id = ?")
+    .bind(cid, id).run();
+  return !!res.meta.changes;
 }
 
 function arrayBufferToBase64(buffer) {

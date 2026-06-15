@@ -108,25 +108,260 @@ const BASE_CSS = `
   footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 28px; }
 `;
 
-export function renderPlayer(v) {
+// Reaction emoji the player offers. Must stay in sync with REACTIONS in
+// src/index.js (the server is the authority and rejects anything else).
+const REACTION_EMOJI = ["👍", "🎉", "😂", "❤️", "👀", "🔥"];
+
+// Styles for reactions, comments and the owner action bar — layered on BASE_CSS
+// for both the public player and the owner view.
+const ENGAGE_CSS = `
+  .backlink { color: var(--muted); font-size: 13px; }
+  .reactions { flex-wrap: wrap; }
+  .reactions button { display: inline-flex; align-items: center; gap: 6px; transition: transform .08s ease, background .15s ease; }
+  .reactions button .rc { font-size: 12px; font-weight: 700; color: var(--muted); }
+  .reactions button.active { background: rgba(10,132,255,0.18); border-color: rgba(10,132,255,0.5); }
+  .reactions button.active .rc { color: var(--text); }
+  .reactions button:active { transform: scale(0.94); }
+
+  .btn { cursor: pointer; border: 1px solid var(--panel-border); background: rgba(255,255,255,0.06);
+         color: var(--text); font-weight: 600; font-size: 12px; border-radius: 10px; padding: 7px 12px;
+         text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+  .btn:hover { background: rgba(255,255,255,0.12); }
+  .btn.danger { color: #ff8a8a; border-color: rgba(255,90,90,0.35); }
+  .btn.danger:hover { background: rgba(255,90,90,0.14); }
+  .btn.primary { background: var(--accent); border-color: transparent; color: #fff; }
+  .btn.primary:hover { background: var(--accent); filter: brightness(1.08); }
+
+  .ownerbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+              padding: 12px 14px; margin-bottom: 14px; }
+  .ownerbar .ob-status, .ownerbar .ob-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .ownerbar form { margin: 0; }
+
+  .commentcard { margin-top: 14px; padding: 14px 16px 16px; }
+  .comments-head { font-weight: 700; font-size: 14px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .comments-head .cnum { color: var(--muted); font-weight: 600; }
+  .comment-form { display: grid; gap: 8px; margin-bottom: 18px; }
+  .cinput { width: 100%; background: rgba(255,255,255,0.05); border: 1px solid var(--panel-border); color: var(--text);
+            border-radius: 12px; padding: 10px 12px; font: inherit; resize: vertical; }
+  .cinput::placeholder { color: var(--muted); }
+  .cinput:focus { outline: none; border-color: rgba(10,132,255,0.6); }
+  .cform-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .pin { color: var(--muted); font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .pin b { color: var(--text); }
+
+  .comment-list { display: grid; gap: 14px; }
+  .cempty { color: var(--muted); font-size: 13px; padding: 4px 0; }
+  .comment { display: flex; gap: 10px; }
+  .avatar { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+            font-size: 13px; font-weight: 700; color: #fff; background: linear-gradient(135deg, var(--accent), var(--teal)); }
+  .comment-main { flex: 1; min-width: 0; }
+  .comment-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+  .comment-meta .cauthor { color: var(--text); font-weight: 600; }
+  .tspill { border: 1px solid rgba(10,132,255,0.4); background: rgba(10,132,255,0.14); color: var(--accent);
+            border-radius: 999px; padding: 1px 8px; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+  .tspill:hover { background: rgba(10,132,255,0.22); }
+  .cbody { color: var(--text); font-size: 14px; line-height: 1.5; margin-top: 3px; white-space: pre-wrap; word-break: break-word; }
+  .linklike { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0; }
+  .linklike:hover { color: #ff8a8a; }
+  .actline { color: var(--text); font-size: 13.5px; }
+`;
+
+// Client logic shared by the public player and the owner view. Injected after a
+// small inline preamble that sets VID / OWNER / __COMMENTS__. No template
+// placeholders or backticks here, so it nests safely inside renderPlayer.
+const PLAYER_JS = `
+  function tab(btn, name){
+    document.querySelectorAll('.tabs button').forEach(function(b){ b.classList.remove('active'); });
+    btn.classList.add('active');
+    document.querySelectorAll('.tabbody [data-tab]').forEach(function(d){ d.hidden = d.dataset.tab !== name; });
+  }
+  function vId(){
+    var k = localStorage.getItem('cue.viewer');
+    if(!k){ k = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('v' + Math.random().toString(36).slice(2) + Date.now().toString(36)); localStorage.setItem('cue.viewer', k); }
+    return k;
+  }
+  function lsGet(k){ try { return JSON.parse(localStorage.getItem(k) || '[]'); } catch(e){ return []; } }
+  function lsSet(k, a){ try { localStorage.setItem(k, JSON.stringify(a)); } catch(e){} }
+  function reactKey(){ return 'cue.react.' + VID; }
+  function myCmtKey(){ return 'cue.cmt.' + VID; }
+
+  function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function pad(n){ return String(n).padStart(2,'0'); }
+  function fmtT(s){ s = Math.max(0, Math.round(Number(s)||0)); return Math.floor(s/60) + ':' + pad(s%60); }
+  function ago(iso){
+    var t = Date.parse(iso); if(isNaN(t)) return '';
+    var s = Math.max(1, Math.round((Date.now()-t)/1000));
+    if(s<60) return s+'s ago';
+    var m = Math.round(s/60); if(m<60) return m+'m ago';
+    var h = Math.round(m/60); if(h<24) return h+'h ago';
+    var d = Math.round(h/24); if(d<7) return d+'d ago';
+    try { return new Date(t).toLocaleDateString(); } catch(e){ return ''; }
+  }
+  function vEl(){ return document.querySelector('video'); }
+  function seekTo(t){ var p = vEl(); if(p){ p.currentTime = Number(t)||0; p.play().catch(function(){}); p.scrollIntoView({behavior:'smooth', block:'start'}); } }
+
+  function applyCounts(counts){
+    counts = counts || {};
+    document.querySelectorAll('#reactions button').forEach(function(b){
+      var n = Number(counts[b.dataset.emoji] || 0);
+      b.querySelector('.rc').textContent = n>0 ? n : '';
+    });
+    var total = 0; Object.keys(counts).forEach(function(k){ total += Number(counts[k]||0); });
+    var a = document.getElementById('aReact'); if(a) a.textContent = total;
+  }
+  function highlightMine(){
+    var mine = lsGet(reactKey());
+    document.querySelectorAll('#reactions button').forEach(function(b){
+      b.classList.toggle('active', mine.indexOf(b.dataset.emoji) >= 0);
+    });
+  }
+  function react(emoji){
+    fetch('/api/public/videos/' + encodeURIComponent(VID) + '/reactions', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ emoji: emoji, viewerId: vId() })
+    }).then(function(r){ return r.ok ? r.json() : null; }).then(function(d){
+      if(!d) return; applyCounts(d.counts); lsSet(reactKey(), d.mine || []); highlightMine();
+    }).catch(function(){});
+  }
+
+  function canDelete(c){ return OWNER || lsGet(myCmtKey()).indexOf(c.id) >= 0; }
+  function commentHTML(c){
+    var initial = ((c.author||'A').trim().charAt(0) || 'A').toUpperCase();
+    var tsPill = (c.tsSeconds!=null && c.tsSeconds!=='') ? '<button type="button" class="tspill" onclick="seekTo(' + Number(c.tsSeconds) + ')">' + fmtT(c.tsSeconds) + '</button>' : '';
+    var del = '';
+    if(canDelete(c)){
+      if(OWNER){
+        del = '<form class="cdel" method="post" action="/app/v/' + encodeURIComponent(VID) + '">' +
+              '<input type="hidden" name="action" value="delete-comment"><input type="hidden" name="commentId" value="' + esc(c.id) + '">' +
+              '<button class="linklike" type="submit">Delete</button></form>';
+      } else {
+        del = '<button type="button" class="linklike" onclick="delComment(\\'' + esc(c.id) + '\\')">Delete</button>';
+      }
+    }
+    return '<div class="comment" data-id="' + esc(c.id) + '">' +
+      '<div class="avatar">' + esc(initial) + '</div>' +
+      '<div class="comment-main"><div class="comment-meta">' +
+        '<span class="cauthor">' + esc(c.author||'Anonymous') + '</span>' + tsPill +
+        '<span class="cwhen" title="' + esc(c.createdAt) + '">' + esc(ago(c.createdAt)) + '</span>' + del +
+      '</div><div class="cbody">' + esc(c.body) + '</div></div></div>';
+  }
+  function renderComments(list){
+    var box = document.getElementById('commentList'); if(!box) return;
+    box.innerHTML = list.length ? list.map(commentHTML).join('') : '<div class="cempty">No comments yet — be the first.</div>';
+    var cc = document.getElementById('cCount'); if(cc) cc.textContent = list.length;
+    var ac = document.getElementById('aComments'); if(ac) ac.textContent = list.length;
+  }
+  function postComment(ev){
+    ev.preventDefault();
+    var body = document.getElementById('cBody').value;
+    if(!body.trim()) return false;
+    var name = document.getElementById('cName').value;
+    var pin = document.getElementById('cPin');
+    var ts = (pin && pin.checked && vEl()) ? vEl().currentTime : null;
+    fetch('/api/public/videos/' + encodeURIComponent(VID) + '/comments', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ author: name, body: body, viewerId: vId(), tsSeconds: ts })
+    }).then(function(r){ return r.ok ? r.json() : r.json().then(function(e){ throw new Error(e.error||'failed'); }); })
+      .then(function(d){
+        COMMENTS.push(d.comment);
+        var mk = lsGet(myCmtKey()); mk.push(d.comment.id); lsSet(myCmtKey(), mk);
+        renderComments(COMMENTS);
+        document.getElementById('cBody').value = '';
+      }).catch(function(e){ alert('Could not post comment: ' + e.message); });
+    return false;
+  }
+  function delComment(id){
+    if(!confirm('Delete this comment?')) return;
+    fetch('/api/public/videos/' + encodeURIComponent(VID) + '/comments/' + encodeURIComponent(id) + '?viewer=' + encodeURIComponent(vId()), { method:'DELETE' })
+      .then(function(r){ if(!r.ok) throw new Error(); COMMENTS = COMMENTS.filter(function(c){ return c.id !== id; }); renderComments(COMMENTS); })
+      .catch(function(){ alert('Could not delete comment.'); });
+  }
+
+  var COMMENTS = Array.isArray(__COMMENTS__) ? __COMMENTS__.slice() : [];
+  document.addEventListener('DOMContentLoaded', function(){
+    highlightMine();
+    renderComments(COMMENTS);
+    var p = vEl(), at = document.getElementById('cPinAt');
+    if(p && at){ p.addEventListener('timeupdate', function(){ at.textContent = fmtT(p.currentTime); }); }
+  });
+`;
+
+// Owner-only status + action bar shown above the video on /app/v/:id. The
+// buttons are same-origin form POSTs to /app/v/:id (Origin-checked server side).
+function renderOwnerBar(v) {
+  const act = (action, label, danger = false, extra = "") =>
+    `<form method="post" action="/app/v/${esc(v.id)}"${extra}>` +
+    `<input type="hidden" name="action" value="${action}" />` +
+    `<button class="btn${danger ? " danger" : ""}" type="submit">${label}</button></form>`;
+  const status = v.disabled
+    ? `<span class="badge off">Link disabled</span>`
+    : `<span class="badge on">Link live</span>`;
+  const aiBadges =
+    (v.transcript ? `<span class="badge ai">📝 transcript</span>` : ``) +
+    (v.summary ? `<span class="badge ai">✨ summary</span>` : ``);
+  const toggle = v.disabled ? "enable" : "disable";
+  const toggleLabel = v.disabled ? "Enable link" : "Disable link";
+  return `
+  <div class="card ownerbar">
+    <div class="ob-status">${status}${aiBadges}</div>
+    <div class="ob-actions">
+      ${act(toggle, toggleLabel)}
+      ${act("transcribe", v.transcript ? "Re-transcribe" : "Transcribe", false, ` onsubmit="this.querySelector('button').textContent='Transcribing…'"`)}
+      ${act("summarize", v.summary ? "Re-summarize" : "Summarize", false, ` onsubmit="this.querySelector('button').textContent='Summarizing…'"`)}
+      ${act("delete", "Delete", true, ` onsubmit="return confirm('Delete this recording everywhere (cloud copy + share link)? This cannot be undone.')"`)}
+      <a class="btn" href="/v/${esc(v.id)}" target="_blank" rel="noopener">Open public page ↗</a>
+    </div>
+  </div>`;
+}
+
+// The video page. In owner mode (opts.owner) it adds the action bar, comment
+// moderation, and a flash banner; otherwise it's the public share view. Both
+// share the reactions bar and comments section.
+export function renderPlayer(v, opts = {}) {
+  const { owner = false, counts = {}, comments = [], flash = "", error = "" } = opts;
   const share = esc(v.shareURL);
   const media = esc(v.mediaURL);
+
   const transcriptBody = v.transcript
     ? `<div class="transcript">${esc(v.transcript)}</div>`
-    : `A searchable, word-level transcript will appear here. <span class="soon">Phase 2</span>`;
+    : (owner
+        ? `No transcript yet — use <b>Transcribe</b> above to generate one.`
+        : `A searchable, word-level transcript will appear here. <span class="soon">Phase 2</span>`);
   const summaryBody = v.summary
     ? `<div class="transcript">${esc(v.summary)}</div>`
-    : `An AI summary and smart chapters will appear here. <span class="soon">Phase 2</span>`;
+    : (owner
+        ? `No summary yet — use <b>Summarize</b> above to generate one.`
+        : `An AI summary and smart chapters will appear here. <span class="soon">Phase 2</span>`);
+
+  const reactionButtons = REACTION_EMOJI.map((e) => {
+    const n = Number(counts[e] || 0);
+    return `<button type="button" data-emoji="${e}" onclick="react('${e}')"><span class="re">${e}</span><span class="rc">${n > 0 ? n : ""}</span></button>`;
+  }).join("");
+  const reactionTotal = Object.values(counts).reduce((a, b) => a + Number(b || 0), 0);
+  const commentCount = comments.length;
+
+  const banner = owner
+    ? (error ? `<div class="banner err">${esc(error)}</div>`
+            : (flash ? `<div class="banner ok">${esc(flash)}</div>` : ""))
+    : "";
+  const ownerBar = owner ? renderOwnerBar(v) : "";
+
+  // Comments render client-side from this payload (one renderer, and it lets the
+  // public Delete affordance depend on localStorage). Escape "<" so the JSON
+  // can't terminate the <script> element.
+  const commentsJSON = JSON.stringify(comments).replace(/</g, "\\u003c");
+
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${esc(v.title)} · Cue</title>
-<style>${BASE_CSS}</style>
+<style>${BASE_CSS}${ENGAGE_CSS}${owner ? APP_CSS : ""}</style>
 </head><body>
 <div class="wrap">
   <div class="topbar">
     <div class="brand"><div class="logo"></div> Cue</div>
+    ${owner ? `<a class="backlink" href="/app">← Library</a>` : ""}
     <div class="spacer"></div>
     <div class="linkpill">
       <code id="share">${share}</code>
@@ -134,13 +369,27 @@ export function renderPlayer(v) {
     </div>
   </div>
 
+  ${banner}
+  ${ownerBar}
+
   <div class="layout">
     <div>
       <div class="card videoframe">
         <video controls autoplay playsinline preload="metadata" src="${media}"></video>
       </div>
-      <div class="reactions" aria-hidden="true">
-        <button>👍</button><button>🎉</button><button>😂</button><button>❤️</button><button>👀</button><button>🔥</button>
+      <div class="reactions" id="reactions">${reactionButtons}</div>
+
+      <div class="card commentcard">
+        <div class="comments-head">💬 Comments <span class="cnum" id="cCount">${commentCount}</span></div>
+        <form class="comment-form" onsubmit="return postComment(event)">
+          <input id="cName" class="cinput" placeholder="Your name (optional)" maxlength="60" autocomplete="name" />
+          <textarea id="cBody" class="cinput" placeholder="Add a comment…" maxlength="2000" rows="2" required></textarea>
+          <div class="cform-row">
+            <label class="pin"><input type="checkbox" id="cPin" checked /> Pin to <b id="cPinAt">0:00</b></label>
+            <button type="submit" class="btn primary">Comment</button>
+          </div>
+        </form>
+        <div class="comment-list" id="commentList"></div>
       </div>
     </div>
 
@@ -161,19 +410,20 @@ export function renderPlayer(v) {
       <div class="tabbody">
         <div data-tab="summary">${summaryBody}</div>
         <div data-tab="transcript" hidden>${transcriptBody}</div>
-        <div data-tab="activity" hidden>Views, reactions, and comments will appear here. <span class="soon">Phase 2</span></div>
+        <div data-tab="activity" hidden>
+          <div class="actline"><b id="aReact">${reactionTotal}</b> reaction${reactionTotal === 1 ? "" : "s"} · <b id="aComments">${commentCount}</b> comment${commentCount === 1 ? "" : "s"}</div>
+        </div>
       </div>
     </div>
   </div>
 
-  <footer>Shared with Cue · self-hosted</footer>
+  <footer>${owner ? "Your private library · only you can see these controls" : "Shared with Cue · self-hosted"}</footer>
 </div>
 <script>
-  function tab(btn, name){
-    document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));
-    btn.classList.add('active');
-    document.querySelectorAll('.tabbody [data-tab]').forEach(d=>d.hidden = d.dataset.tab!==name);
-  }
+  const VID = ${JSON.stringify(v.id)};
+  const OWNER = ${owner ? "true" : "false"};
+  const __COMMENTS__ = ${commentsJSON};
+  ${PLAYER_JS}
 </script>
 </body></html>`;
 }
@@ -243,6 +493,8 @@ const APP_CSS = `
   .btn.danger { color: #ff8a8a; border-color: rgba(255,90,90,0.35); }
   .btn.danger:hover { background: rgba(255,90,90,0.14); }
   .count { color: var(--muted); font-size: 13px; }
+  .row .t a { color: var(--text); text-decoration: none; }
+  .row .t a:hover { color: var(--accent); }
   .actions { flex-wrap: wrap; }
   .badge.ai { color: var(--accent); background: rgba(10,132,255,0.14); }
   .aiout { padding: 0 14px 14px; }
@@ -284,7 +536,7 @@ export function renderApp(videos, { base = "", flash = "", error = "" } = {}) {
     <div class="card">
       <div class="row approw">
         <div class="grow">
-          <div class="t">${esc(v.title)}</div>
+          <div class="t"><a href="/app/v/${esc(v.id)}">${esc(v.title)}</a></div>
           <div class="submeta">
             <span>📅 ${esc(fmtDate(v.createdAt))}</span>
             <span>⏱ ${esc(fmtDuration(v.durationSeconds))}</span>
@@ -294,6 +546,7 @@ export function renderApp(videos, { base = "", flash = "", error = "" } = {}) {
           <div class="sharerow"><a href="/v/${esc(v.id)}" target="_blank" rel="noopener">${share}</a></div>
         </div>
         <div class="actions">
+          <a class="btn" href="/app/v/${esc(v.id)}">Manage</a>
           ${act(v.id, toggle, toggleLabel)}
           ${act(v.id, "transcribe", v.transcript ? "Re-transcribe" : "Transcribe", ` onsubmit="this.querySelector('button').textContent='Transcribing…'"`)}
           ${act(v.id, "summarize", v.summary ? "Re-summarize" : "Summarize", ` onsubmit="this.querySelector('button').textContent='Summarizing…'"`)}

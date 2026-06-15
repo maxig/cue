@@ -121,6 +121,9 @@ npm run db:schema:local    # the local `wrangler dev` simulator
 > ```sh
 > npx wrangler d1 execute cue --remote --command "ALTER TABLE videos ADD COLUMN audio_key TEXT; ALTER TABLE videos ADD COLUMN bytes INTEGER NOT NULL DEFAULT 0; ALTER TABLE videos ADD COLUMN disabled INTEGER NOT NULL DEFAULT 1; ALTER TABLE videos ADD COLUMN transcript TEXT; ALTER TABLE videos ADD COLUMN transcript_vtt TEXT;"
 > ```
+> **Adding reactions & comments** ([below](#reactions--comments))? They live in new
+> tables, so just re-run the schema — it's idempotent (`CREATE TABLE IF NOT EXISTS`
+> leaves `videos` untouched): `npm run db:schema` (remote) / `npm run db:schema:local`.
 
 ---
 
@@ -321,6 +324,45 @@ From the app's Library (right-click a row, or the detail pane) — or from the
 > CDN may still return cached bytes to someone who saved the direct URL — use
 > **Remove from Cloud** to hard-revoke.
 
+### Per-video owner view (`/app/v/:id`)
+
+Every recording has a private management page at **`/app/v/<id>`** — the same player
+your viewers see, plus an action bar (Enable/Disable link, Transcribe, Summarize,
+Delete), the inline transcript/summary, and **comment moderation**. Open it from the
+[dashboard](#step-6-recommended--owner-dashboard-via-cloudflare-access) (click a
+recording's title or its **Manage** button). It plays a recording even while the
+link is disabled, so you can review before publishing.
+
+**No extra Zero Trust setup.** A Cloudflare Access self-hosted app scoped to the
+`/app` *path* protects that path **and every subpath**, so the Access app from
+Step 6 already covers `/app/v/:id` (and `/app/file/...`) — nothing new to configure.
+The Worker also re-verifies the Access token (or owner bearer) on these routes, so
+they stay fail-closed even on the `*.workers.dev` host. (If you ever set the Access
+app to *exclude* subpaths, add an `/app/*` include — but subpath inclusion is the
+default.)
+
+---
+
+## Reactions & comments
+
+The player page (`/v/:id`) is interactive for **anyone with the link** — no login:
+
+- **Reactions** — tap an emoji (👍 🎉 😂 ❤️ 👀 🔥); counts are aggregate and a viewer
+  can toggle their own back off.
+- **Comments** — post with an optional name (defaults to *Anonymous*), **pinned to the
+  current spot in the video**; the timestamp is clickable and seeks the player. A
+  commenter can delete their own comment; **you** can delete any from `/app/v/:id`.
+
+Both work only while a link is **enabled** (a disabled/410 recording accepts neither).
+Reactions and comments live in D1 (`reactions`, `comments` tables) and are removed
+automatically when a recording is deleted or evicted.
+
+> **Spam hardening (optional).** The public write endpoints (`/api/public/*`) are open
+> by design and guarded by input validation (emoji allowlist, length caps, enabled-
+> link-only, `no-store`). For a heavily public deployment add a Cloudflare **WAF
+> rate-limiting rule** on `/api/public/*`, and/or a **Turnstile** challenge on the
+> comment box — neither needs app changes.
+
 ---
 
 ## Security model
@@ -330,9 +372,10 @@ What's reachable, and by whom:
 | Surface | Who can reach it |
 | --- | --- |
 | `GET /v/:id`, `GET /file/:key` | **anyone** — but only while that specific link is **enabled** (else 410/404) |
+| `POST /api/public/videos/:id/{reactions,comments}` | **anyone** — but only for an **enabled** link (validated: emoji allowlist, length caps, `no-store`) |
 | `GET /healthz`, `GET /` | anyone — a health check and a landing page that **never lists** anything |
-| `GET/POST/DELETE /api/*` | **owner token only** (`Authorization: Bearer …`) — fail-closed |
-| `GET/POST /app` (dashboard) | **owner token OR a verified Cloudflare Access login** — fail-closed |
+| `GET/POST/DELETE /api/*` (except `/api/public/*`) | **owner token only** (`Authorization: Bearer …`) — fail-closed |
+| `GET/POST /app`, `/app/v/:id`, `/app/file/*` | **owner token OR a verified Cloudflare Access login** — fail-closed |
 | R2 bucket (list / upload / download) | **only your R2 API keys** — the bucket is private, no public URL, no CORS |
 | D1 database | **only the Worker** — never exposed to the internet |
 
@@ -390,10 +433,16 @@ archive.
 | `GET` | `/api/videos/:id` | **owner** | fetch one recording |
 | `DELETE` | `/api/videos/:id` | **owner** | delete R2 objects + metadata |
 | `POST` | `/api/videos/:id/disable` · `/enable` | **owner** | turn the share link off / on |
-| `POST` | `/api/videos/:id/transcribe` | **owner** | transcribe (Workers AI) |
+| `POST` | `/api/videos/:id/transcribe` · `/summarize` | **owner** | transcribe / summarize (Workers AI) |
 | `GET` · `POST` | `/app` | **owner / Access** | private dashboard (list + Enable/Disable/Delete) |
+| `GET` · `POST` | `/app/v/:id` | **owner / Access** | per-video owner view + actions + comment moderation |
+| `GET` | `/app/file/:key` | **owner / Access** | stream bytes for the owner (plays even while disabled) |
 | `GET` | `/v/:id` | public | web player page (410 if disabled) |
 | `GET` | `/file/:key` | public | stream bytes for an *enabled* recording (Range-aware; 404/410 otherwise) |
+| `POST` | `/api/public/videos/:id/reactions` | public\* | toggle an emoji reaction · *\*enabled links only* |
+| `POST` | `/api/public/videos/:id/comments` | public\* | post a timestamped comment · *\*enabled links only* |
+| `DELETE` | `/api/public/videos/:id/comments/:cid` | author / owner | delete a comment (author via viewer id, or owner) |
+| `GET` | `/api/public/videos/:id/engagement` | public\* | reactions + comments JSON · *\*enabled links only* |
 | `GET` | `/` | public | private landing page (never lists the catalog) |
 
 ---

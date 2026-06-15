@@ -19,3 +19,30 @@ CREATE TABLE IF NOT EXISTS videos (
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos (created_at DESC);
+
+-- Viewer comments on a shared recording (Loom-style). Public viewers post these
+-- from the player page; the owner moderates from /app/v/:id. ts_seconds pins a
+-- comment to a position in the video. Rows are removed explicitly when a video
+-- is deleted/evicted (D1 doesn't enforce ON DELETE CASCADE by default).
+CREATE TABLE IF NOT EXISTS comments (
+  id          TEXT PRIMARY KEY,
+  video_id    TEXT    NOT NULL,
+  author      TEXT    NOT NULL DEFAULT 'Anonymous',
+  body        TEXT    NOT NULL,
+  viewer_id   TEXT,                       -- anonymous browser id (localStorage) for delete-own
+  ts_seconds  REAL,                       -- video position the comment is pinned to (nullable)
+  created_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_comments_video ON comments (video_id, created_at);
+
+-- Emoji reactions. One row per (video, emoji, viewer) so a viewer can toggle each
+-- emoji on/off; aggregate counts come from GROUP BY emoji.
+CREATE TABLE IF NOT EXISTS reactions (
+  id          TEXT PRIMARY KEY,
+  video_id    TEXT    NOT NULL,
+  emoji       TEXT    NOT NULL,
+  viewer_id   TEXT    NOT NULL,           -- anonymous browser id (localStorage)
+  created_at  TEXT    NOT NULL,
+  UNIQUE (video_id, emoji, viewer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reactions_video ON reactions (video_id);
