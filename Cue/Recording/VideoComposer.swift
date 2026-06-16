@@ -286,6 +286,7 @@ enum VideoComposer {
                         padding: Double,
                         background: CanvasBackground,
                         aspectRatio: CGFloat?,
+                        fps: Int = 30,
                         cameraStartOffset: Double?,
                         leadTrim: Double?,
                         cameraHiddenRanges: [ClosedRange<Double>] = [],
@@ -391,7 +392,9 @@ enum VideoComposer {
         // Video composition
         let videoComposition = AVMutableVideoComposition()
         videoComposition.customVideoCompositorClass = CueVideoCompositor.self
-        videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+        // Render the final at the captured rate (60 when chosen) rather than a
+        // fixed 30 — otherwise the extra frames captured at 60 fps are dropped here.
+        videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, fps)))
         videoComposition.renderSize = renderSize
         videoComposition.instructions = [
             CueVideoCompositorInstruction(

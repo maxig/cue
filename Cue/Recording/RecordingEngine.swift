@@ -30,6 +30,9 @@ final class RecordingEngine: ObservableObject {
     private var screenPadding: Double = 0
     private var canvasBackground: CanvasBackground = .none
     private var aspectMode: AspectRatioMode = .sixteenNine
+    /// The capture frame rate chosen at `start` (30 or 60). Remembered so the
+    /// final composition is rendered at the same rate instead of a fixed 30.
+    private var captureFPS: Int = 30
 
     // Pause + camera-toggle bookkeeping (composition-time seconds).
     private var pausedWallTotal: Double = 0
@@ -77,6 +80,7 @@ final class RecordingEngine: ObservableObject {
         self.screenPadding = padding
         self.canvasBackground = background
         self.aspectMode = aspectMode
+        self.captureFPS = fps
         self.usedCamera = false
         self.usedScreen = false
         self.contentStartAnchor = nil
@@ -268,6 +272,7 @@ final class RecordingEngine: ObservableObject {
                 padding: screenPadding,
                 background: canvasBackground,
                 aspectRatio: aspectMode.ratio,
+                fps: captureFPS,
                 cameraStartOffset: cameraOffset,
                 leadTrim: leadTrim,
                 cameraHiddenRanges: cameraDisabledRanges,
