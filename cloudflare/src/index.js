@@ -21,7 +21,11 @@ const CORS = {
 };
 
 // Largest object we'll pull fully into the Worker for in-line transcription.
-const MAX_TRANSCRIBE_BYTES = 100 * 1024 * 1024;
+// A Worker has ~128 MB of memory and base64-encoding an ArrayBuffer costs
+// ~3-4x the object size at peak, so anything much above ~20 MB risks OOM. An
+// AAC audio sidecar at 20 MB is ~17+ minutes of speech — plenty for v1. Larger
+// recordings should be chunked (future work); this is the safe in-line ceiling.
+const MAX_TRANSCRIBE_BYTES = 20 * 1024 * 1024;
 
 // Default R2 storage cap (override with the MAX_BYTES var). 9 GB stays under the
 // 10 GB free tier with headroom.
@@ -220,7 +224,7 @@ export default {
              title=excluded.title, duration_seconds=excluded.duration_seconds,
              object_key=excluded.object_key, audio_key=excluded.audio_key, bytes=excluded.bytes,
              width=excluded.width, height=excluded.height,
-             capture_mode=excluded.capture_mode, created_at=excluded.created_at, disabled=1`
+             capture_mode=excluded.capture_mode, created_at=excluded.created_at`
         ).bind(
           id,
           title || "Untitled Cue",
@@ -327,6 +331,18 @@ export default {
           await deleteVideo(env, id);
         }
         return Response.redirect(`${base}/app`, 303);
+      }
+
+      // Fresh media URL for the public player — lets the page recover when a
+      // presigned URL expires mid-viewing (pause/seek past the TTL). Same
+      // visibility rules as the player page: enabled links only.
+      const mediaURLMatch = pathname.match(/^\/v\/([^/]+)\/media-url$/);
+      if (mediaURLMatch && method === "GET") {
+        const sid = decodeURIComponent(mediaURLMatch[1]);
+        const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(sid).first();
+        if (!row) return json({ error: "not found" }, { status: 404 });
+        if (row.disabled) return json({ error: "disabled" }, { status: 410 });
+        return json({ mediaURL: await resolveMediaURL(request, env, rowToVideo(row)) });
       }
 
       // Web player page ---------------------------------------------------
