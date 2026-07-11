@@ -3,6 +3,7 @@ import SwiftUI
 import AppKit
 import Combine
 import AVFoundation
+import QuartzCore
 
 /// The root view-model. Owns the subsystems and the recording state machine,
 /// and is injected into every view as an `@EnvironmentObject`.
@@ -56,6 +57,11 @@ final class AppState: ObservableObject {
     @Published var errorMessage: String?
 
     private var elapsedTimer: Timer?
+    /// Anchor-based elapsed tracking so the clock never drifts: `elapsedBase` is
+    /// the running total up to the last resume, `elapsedAnchor` is when the
+    /// current live span began. Displayed `elapsed` is recomputed from these.
+    private var elapsedBase: TimeInterval = 0
+    private var elapsedAnchor: CFTimeInterval = 0
     private var countdownTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
 
@@ -188,6 +194,9 @@ final class AppState: ObservableObject {
                                             background: self.preferences.canvasBackground,
                                             aspectMode: self.preferences.aspectMode)
                 if seconds <= 0 { self.enterRecording() }
+            } catch is CancellationError {
+                // A cancel/stop superseded this start mid-setup; that path already
+                // reset state and tore down the live surfaces — nothing to do.
             } catch {
                 self.errorMessage = error.localizedDescription
                 self.state = .idle
@@ -220,6 +229,8 @@ final class AppState: ObservableObject {
         cameraActive = config.cameraEnabled && config.camera?.isNone == false
         captureIndicator.hide()   // the region hint must never appear in the video
         elapsed = 0
+        elapsedBase = 0
+        elapsedAnchor = CACurrentMediaTime()
         startElapsedTimer()
     }
 
@@ -232,9 +243,13 @@ final class AppState: ObservableObject {
         guard state == .recording else { return }
         isPaused.toggle()
         if isPaused {
+            // Bank the live span, then freeze the clock.
+            elapsedBase += CACurrentMediaTime() - elapsedAnchor
+            elapsed = elapsedBase
             engine.pause()
             stopElapsedTimer()
         } else {
+            elapsedAnchor = CACurrentMediaTime()
             engine.resume()
             startElapsedTimer()
         }
@@ -458,10 +473,12 @@ final class AppState: ObservableObject {
 
     private func startElapsedTimer() {
         elapsedTimer?.invalidate()
-        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        // Tick sub-second and recompute from the anchor so the displayed seconds
+        // stay locked to wall time instead of accumulating per-tick drift.
+        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.isRecording else { return }
-                self.elapsed += 1
+                guard let self, self.isRecording, !self.isPaused else { return }
+                self.elapsed = self.elapsedBase + (CACurrentMediaTime() - self.elapsedAnchor)
             }
         }
     }

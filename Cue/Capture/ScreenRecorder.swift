@@ -63,6 +63,12 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var lastVideoFormat: CMFormatDescription?
     private var lastVideoPTS: CMTime = .invalid
     private var lastVideoHostTime: CFTimeInterval = 0
+    /// Whether `lastVideoBuffer` is a private copy we own, vs. a buffer still
+    /// owned by ScreenCaptureKit's pool. We copy the pooled buffer lazily on the
+    /// first keep-alive after a stall (see `emitKeepAliveFrameIfNeeded`) so we
+    /// don't pin a pool buffer — or risk re-appending a recycled surface — while
+    /// the screen is static, without paying a per-frame copy during motion.
+    private var lastVideoBufferIsOwnedCopy = false
     private var frameDuration = CMTime(value: 1, timescale: 30)
     private var keepAliveTimer: DispatchSourceTimer?
 
@@ -79,6 +85,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         totalPausedDuration = .zero
         micMuted = false
         lastVideoBuffer = nil
+        lastVideoBufferIsOwnedCopy = false
         lastVideoFormat = nil
         lastVideoPTS = .invalid
         lastVideoHostTime = 0
@@ -89,6 +96,12 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let url = options.outputFolder.appendingPathComponent("screen.mov")
         try? FileManager.default.removeItem(at: url)
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        // Crash insurance: write a movie fragment every few seconds so a session
+        // interrupted before `finishWriting` (crash, panic, force-quit, power loss)
+        // still leaves a `screen.mov` playable up to the last fragment boundary,
+        // instead of an unreadable file with no `moov` atom. See the recovery scan
+        // in RecordingStore.
+        writer.movieFragmentInterval = CMTime(seconds: 5, preferredTimescale: 600)
 
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264,
@@ -206,12 +219,20 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let now = CACurrentMediaTime()
         let sinceLast = now - lastVideoHostTime
         guard sinceLast >= 0.1 else { return }   // real frames still arriving
+        // First keep-alive after a stall: take a private copy so we stop pinning
+        // (and can't re-append a since-recycled) ScreenCaptureKit pool buffer.
+        var emitBuffer = buffer
+        if !lastVideoBufferIsOwnedCopy, let copy = Self.copyPixelBuffer(buffer) {
+            lastVideoBuffer = copy
+            lastVideoBufferIsOwnedCopy = true
+            emitBuffer = copy
+        }
         let span = CMTime(seconds: sinceLast, preferredTimescale: 600)
         let pts = lastVideoPTS + span
         var timing = CMSampleTimingInfo(duration: span, presentationTimeStamp: pts, decodeTimeStamp: .invalid)
         var sample: CMSampleBuffer?
         let status = CMSampleBufferCreateForImageBuffer(
-            allocator: kCFAllocatorDefault, imageBuffer: buffer, dataReady: true,
+            allocator: kCFAllocatorDefault, imageBuffer: emitBuffer, dataReady: true,
             makeDataReadyCallback: nil, refcon: nil, formatDescription: format,
             sampleTiming: &timing, sampleBufferOut: &sample)
         guard status == noErr, let sample else { return }
@@ -279,6 +300,55 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             sampleSizeEntryCount: sizeCount, sampleSizeArray: &sizes,
             sampleBufferOut: &out)
         return status == noErr ? out : nil
+    }
+
+    /// Deep-copies a pixel buffer into a freshly allocated one (same dimensions
+    /// and pixel format), so the copy is independent of ScreenCaptureKit's pool.
+    /// Handles both single-plane (BGRA) and planar layouts.
+    private static func copyPixelBuffer(_ source: CVImageBuffer) -> CVPixelBuffer? {
+        let width = CVPixelBufferGetWidth(source)
+        let height = CVPixelBufferGetHeight(source)
+        let format = CVPixelBufferGetPixelFormatType(source)
+        let attrs: [String: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            kCVPixelBufferMetalCompatibilityKey as String: true
+        ]
+        var destination: CVPixelBuffer?
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, format,
+                                  attrs as CFDictionary, &destination) == kCVReturnSuccess,
+              let destination else { return nil }
+
+        CVPixelBufferLockBaseAddress(source, .readOnly)
+        CVPixelBufferLockBaseAddress(destination, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(destination, [])
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+        }
+
+        if CVPixelBufferIsPlanar(source) {
+            let planes = CVPixelBufferGetPlaneCount(source)
+            for plane in 0..<planes {
+                guard let src = CVPixelBufferGetBaseAddressOfPlane(source, plane),
+                      let dst = CVPixelBufferGetBaseAddressOfPlane(destination, plane) else { return nil }
+                let srcStride = CVPixelBufferGetBytesPerRowOfPlane(source, plane)
+                let dstStride = CVPixelBufferGetBytesPerRowOfPlane(destination, plane)
+                let planeHeight = CVPixelBufferGetHeightOfPlane(source, plane)
+                let rowBytes = min(srcStride, dstStride)
+                for row in 0..<planeHeight {
+                    memcpy(dst + row * dstStride, src + row * srcStride, rowBytes)
+                }
+            }
+        } else {
+            guard let src = CVPixelBufferGetBaseAddress(source),
+                  let dst = CVPixelBufferGetBaseAddress(destination) else { return nil }
+            let srcStride = CVPixelBufferGetBytesPerRow(source)
+            let dstStride = CVPixelBufferGetBytesPerRow(destination)
+            let rowBytes = min(srcStride, dstStride)
+            for row in 0..<height {
+                memcpy(dst + row * dstStride, src + row * srcStride, rowBytes)
+            }
+        }
+        return destination
     }
 
     private static func retimed(_ sb: CMSampleBuffer, by offset: CMTime) -> CMSampleBuffer? {
@@ -400,8 +470,10 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         input.append(toAppend)
 
         // Remember this frame so the keep-alive timer can re-emit it if the
-        // screen goes static and SCK stops delivering frames.
+        // screen goes static and SCK stops delivering frames. This reference is
+        // SCK-pool-owned; the keep-alive path copies it lazily on the first stall.
         lastVideoBuffer = CMSampleBufferGetImageBuffer(toAppend)
+        lastVideoBufferIsOwnedCopy = false
         lastVideoFormat = CMSampleBufferGetFormatDescription(toAppend)
         lastVideoPTS = CMSampleBufferGetPresentationTimeStamp(toAppend)
         lastVideoHostTime = CACurrentMediaTime()

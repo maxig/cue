@@ -32,17 +32,23 @@ final class CueBackendUploadService: UploadService {
 
         // 1b) Upload the audio-only sidecar (used for transcription) if present,
         // so the backend transcribes audio rather than the full video. It lives
-        // next to the video in the recording folder.
+        // next to the video in the recording folder. Best-effort: the video is
+        // already uploaded, so a sidecar failure just means "no transcript yet",
+        // not a failed share — register without the audio key rather than throw.
         var audioKey: String?
         var audioBytes = 0
         if let audioName = recording.audioFileName {
             let audioURL = fileURL.deletingLastPathComponent().appendingPathComponent(audioName)
             if FileManager.default.fileExists(atPath: audioURL.path) {
                 let key = minio.objectKey(for: recording, fileURL: audioURL)
-                _ = try await minio.putObject(objectKey: key, fileURL: audioURL,
-                                              contentType: "audio/mp4", progress: { _ in })
-                audioKey = key
-                audioBytes = fileSize(audioURL)
+                do {
+                    _ = try await minio.putObject(objectKey: key, fileURL: audioURL,
+                                                  contentType: "audio/mp4", progress: { _ in })
+                    audioKey = key
+                    audioBytes = fileSize(audioURL)
+                } catch {
+                    NSLog("Cue: audio sidecar upload failed (continuing without transcript) — \(error.localizedDescription)")
+                }
             }
         }
 
@@ -76,6 +82,9 @@ final class CueBackendUploadService: UploadService {
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
+            // The bytes are in the bucket but the backend rejected the metadata:
+            // clean up the orphaned objects so a failed share leaves nothing behind.
+            await deleteObjectsBestEffort(objectKey: objectKey, audioKey: audioKey)
             throw UploadError.server(status: status, body: String(data: data, encoding: .utf8) ?? "")
         }
 
@@ -117,6 +126,13 @@ final class CueBackendUploadService: UploadService {
         guard (200..<300).contains(status) else {
             throw UploadError.server(status: status, body: String(data: data, encoding: .utf8) ?? "")
         }
+    }
+
+    /// Removes just-uploaded objects when metadata registration fails, so a
+    /// failed share never leaves dangling bytes in the bucket.
+    private func deleteObjectsBestEffort(objectKey: String, audioKey: String?) async {
+        await minio.deleteObject(objectKey: objectKey)
+        if let audioKey { await minio.deleteObject(objectKey: audioKey) }
     }
 
     private func fileSize(_ url: URL) -> Int {
