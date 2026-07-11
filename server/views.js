@@ -169,6 +169,30 @@ export function renderPlayer(v) {
 </body></html>`;
 }
 
+export function renderDisabled() {
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Link disabled · Cue</title><style>${BASE_CSS}</style></head><body>
+<div class="wrap">
+  <div class="topbar"><div class="brand"><div class="logo"></div> Cue</div></div>
+  <div class="empty">This share link has been disabled by its owner.</div>
+  <footer>Cue · self-hosted</footer>
+</div></body></html>`;
+}
+
+export function renderLanding() {
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cue</title><style>${BASE_CSS}</style></head><body>
+<div class="wrap">
+  <div class="topbar"><div class="brand"><div class="logo"></div> Cue</div></div>
+  <div class="empty">This is a private Cue server. Open a share link to view a recording.</div>
+  <footer>Cue · self-hosted</footer>
+</div></body></html>`;
+}
+
 export function renderIndex(videos, { notFound } = {}) {
   const rows = videos.map((v) => `
     <a class="card row" href="/v/${esc(v.id)}">
