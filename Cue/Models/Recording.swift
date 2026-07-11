@@ -71,10 +71,6 @@ struct Recording: Identifiable, Codable, Hashable {
         }
     }
 
-    var formattedDuration: String {
-        let total = Int(duration.rounded())
-        let m = total / 60
-        let s = total % 60
-        return String(format: "%d:%02d", m, s)
-    }
+    /// `m:ss`, or `h:mm:ss` once past an hour (shares `TimeInterval.clockString`).
+    var formattedDuration: String { duration.clockString }
 }

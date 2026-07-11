@@ -17,7 +17,6 @@ final class MinIOUploadService: UploadService {
     }
 
     private let config: Config
-    private let uploader = HTTPUploader()
 
     init(config: Config) { self.config = config }
 
@@ -57,7 +56,12 @@ final class MinIOUploadService: UploadService {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             throw UploadError.fileMissing
         }
-        guard isConfigured, let base = URL(string: config.endpoint) else {
+        // Normalize away any trailing slash on the endpoint: otherwise
+        // `endpoint/ + /bucket/key` yields a doubled slash in the request path
+        // while SigV4 signs the single-slash canonical path → a 403 signature
+        // mismatch that's painful to diagnose.
+        let endpoint = config.endpoint.trimmingTrailingSlash()
+        guard isConfigured, let base = URL(string: endpoint) else {
             throw UploadError.notConfigured("endpoint / bucket / credentials")
         }
 
@@ -74,9 +78,11 @@ final class MinIOUploadService: UploadService {
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
-        signV4(&request, path: path)
+        signV4(&request, method: "PUT", path: path)
 
-        let (data, response) = try await uploader.upload(request: request, fromFile: fileURL, progress: progress)
+        // A fresh uploader per call: its progress handler is instance state, so a
+        // shared instance would cross-wire concurrent uploads (e.g. video + sidecar).
+        let (data, response) = try await HTTPUploader().upload(request: request, fromFile: fileURL, progress: progress)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             throw UploadError.server(status: status, body: String(data: data, encoding: .utf8) ?? "")
@@ -84,9 +90,26 @@ final class MinIOUploadService: UploadService {
         return url
     }
 
+    /// Best-effort delete of an object (used to clean up orphaned uploads). Never
+    /// throws — a failed cleanup is logged, not surfaced.
+    func deleteObject(objectKey: String) async {
+        let endpoint = config.endpoint.trimmingTrailingSlash()
+        guard isConfigured, let base = URL(string: endpoint) else { return }
+        let encodedKey = objectKey
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .map { Self.uriEncode(String($0)) }
+            .joined(separator: "/")
+        let path = "/\(Self.uriEncode(config.bucket))/\(encodedKey)"
+        guard let url = URL(string: base.absoluteString + path) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        signV4(&request, method: "DELETE", path: path)
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
     // MARK: AWS Signature Version 4
 
-    private func signV4(_ request: inout URLRequest, path: String) {
+    private func signV4(_ request: inout URLRequest, method: String, path: String) {
         let now = Date()
         let amzDate = Self.amzDateFormatter.string(from: now)
         let dateStamp = Self.dateStampFormatter.string(from: now)
@@ -103,7 +126,7 @@ final class MinIOUploadService: UploadService {
         let signedHeaders = "host;x-amz-content-sha256;x-amz-date"
 
         let canonicalRequest = [
-            "PUT",
+            method,
             path,
             "",                      // canonical query string (none)
             canonicalHeaders,

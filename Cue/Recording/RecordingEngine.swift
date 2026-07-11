@@ -15,6 +15,11 @@ final class RecordingEngine: ObservableObject {
     private let screenRecorder = ScreenRecorder()
 
     private var currentID: UUID?
+    /// Bumped whenever a session is torn down (cancel/stop). An in-flight `start`
+    /// captures the value at entry and re-checks it after every `await`, so a
+    /// cancel that races the asynchronous stream start-up can't leave a capture
+    /// running with the engine already back in the idle state.
+    private var sessionGeneration = 0
     private var startDate: Date?
     /// Host-clock time the countdown elapsed and the *content* began. Everything
     /// captured before this (countdown lead-in + stream warm-up) is trimmed off.
@@ -64,6 +69,8 @@ final class RecordingEngine: ObservableObject {
                aspectMode: AspectRatioMode) async throws {
         guard currentID == nil else { throw RecordingError.alreadyRecording }
 
+        sessionGeneration &+= 1
+        let generation = sessionGeneration
         let id = UUID()
         let folder = store.folderURL(for: id)
         self.currentID = id
@@ -92,9 +99,11 @@ final class RecordingEngine: ObservableObject {
         // Screen track (all modes except camera-only)
         if config.mode != .cameraOnly {
             guard let (width, height, filter) = await makeFilterAndSize(config: config) else {
-                reset()
+                if generation == sessionGeneration { reset() }
                 throw RecordingError.noCaptureTarget
             }
+            // A cancel/stop may have superseded us while awaiting the filter.
+            try checkNotSuperseded(generation)
             let options = ScreenRecorder.Options(
                 filter: filter,
                 width: width,
@@ -106,6 +115,12 @@ final class RecordingEngine: ObservableObject {
                 outputFolder: folder
             )
             try await screenRecorder.start(options: options)
+            // Superseded while the stream was starting: tear the stream we just
+            // brought up back down so it doesn't keep capturing after cancel.
+            if generation != sessionGeneration {
+                _ = await screenRecorder.stop()
+                throw CancellationError()
+            }
             usedScreen = true
         }
 
@@ -118,6 +133,12 @@ final class RecordingEngine: ObservableObject {
         }
 
         startDate = Date()
+    }
+
+    /// Throws `CancellationError` if a cancel/stop has bumped the generation past
+    /// the one this `start` captured at entry.
+    private func checkNotSuperseded(_ generation: Int) throws {
+        if generation != sessionGeneration { throw CancellationError() }
     }
 
     /// Marks the moment the countdown elapsed and the content begins. The lead-in
@@ -182,6 +203,9 @@ final class RecordingEngine: ObservableObject {
     /// and deletes its files without composing anything.
     func cancel() async {
         guard currentID != nil else { return }
+        // Supersede any in-flight `start` so it tears down its own stream if it
+        // finishes bringing one up after this point.
+        sessionGeneration &+= 1
         if usedScreen { _ = await screenRecorder.stop() }
         if usedCamera { await camera.stopRecording() }
         if let folder { try? FileManager.default.removeItem(at: folder) }
@@ -195,7 +219,13 @@ final class RecordingEngine: ObservableObject {
     /// composition — so the caller can release the camera device and tear down
     /// the live UI immediately rather than holding them through processing.
     func stop(onCaptureFinished: () -> Void = {}) async -> Recording? {
-        guard let id = currentID, let start = startDate, let folder else { return nil }
+        guard let id = currentID, startDate != nil, let folder else { return nil }
+
+        // Duration of the *content* timeline (countdown lead-in and paused spans
+        // excluded), captured before we mutate pause state below — this matches
+        // the composed final.mp4's length, unlike raw wall-clock which would count
+        // paused time the composer excises.
+        let duration = compositionNow()
 
         var screenName: String?
         if usedScreen {
@@ -207,7 +237,6 @@ final class RecordingEngine: ObservableObject {
         // Raw tracks are on disk now; nothing below needs the live camera/screen.
         onCaptureFinished()
 
-        let duration = Date().timeIntervalSince(start)
         let cameraName = usedCamera ? "camera.mov" : nil
 
         // How long after the screen/audio did the camera actually start? Used to
@@ -227,9 +256,14 @@ final class RecordingEngine: ObservableObject {
             return max(0, contentStart - baseAnchor)
         }()
 
-        // If we're stopped while still paused, close the open span first.
+        // If we're stopped while still paused, close the open span first — and
+        // roll it into `pausedWallTotal` so any subsequent `compositionNow()`
+        // (e.g. closing an open camera-off range below) stays accurate instead of
+        // counting the just-ended pause as live content time.
         if let ps = pauseStartWall {
-            pauseSpansHost.append((ps, CACurrentMediaTime()))
+            let now = CACurrentMediaTime()
+            pauseSpansHost.append((ps, now))
+            pausedWallTotal += now - ps
             pauseStartWall = nil
         }
 
@@ -322,7 +356,10 @@ final class RecordingEngine: ObservableObject {
             // Window capture already isolates the single window — the floating
             // camera bubble / region frame are never part of it.
             guard let window = config.window?.scWindow else { return nil }
-            let scale = NSScreen.main?.backingScaleFactor ?? 2
+            // Use the scale of the display the window is actually on, not the main
+            // display — otherwise a window on a non-retina external (or a retina
+            // secondary) records at the wrong resolution.
+            let scale = backingScale(forWindowFrame: window.frame)
             let size = evenClampedSize(width: window.frame.width * scale,
                                        height: window.frame.height * scale)
             return (size.0, size.1, SCContentFilter(desktopIndependentWindow: window))
@@ -348,6 +385,22 @@ final class RecordingEngine: ObservableObject {
         guard let content = try? await SCShareableContent.current else { return [] }
         let bundleID = Bundle.main.bundleIdentifier
         return content.applications.filter { $0.bundleIdentifier == bundleID }
+    }
+
+    /// Backing scale of the display a window sits on. `window.frame` is in CG
+    /// global coordinates (top-left origin), which matches `CGDisplayBounds`, so
+    /// we match on the window's center point falling inside a display's bounds.
+    private func backingScale(forWindowFrame frame: CGRect) -> CGFloat {
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        for screen in NSScreen.screens {
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+            else { continue }
+            let displayID = CGDirectDisplayID(number.uint32Value)
+            if CGDisplayBounds(displayID).contains(center) {
+                return screen.backingScaleFactor
+            }
+        }
+        return NSScreen.main?.backingScaleFactor ?? 2
     }
 
     private func backingScale(for displayID: CGDirectDisplayID) -> CGFloat {

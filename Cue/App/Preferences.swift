@@ -145,6 +145,7 @@ final class Preferences: ObservableObject {
         static let lastMicID = "cue.device.lastMicID"
         static let lastMode = "cue.capture.lastMode"
         static let aspectMode = "cue.canvas.aspectMode"
+        static let instantShare = "cue.share.instant"
     }
 
     @Published var cameraBubbleShape: CameraBubbleShape {
@@ -191,6 +192,12 @@ final class Preferences: ObservableObject {
     @Published var onboardingDone: Bool {
         didSet { defaults.set(onboardingDone, forKey: Key.onboardingDone) }
     }
+    /// When on, finishing a recording enables its share link and copies it to the
+    /// clipboard immediately (Loom-style). Off by default to keep links private
+    /// until you explicitly enable them.
+    @Published var instantShare: Bool {
+        didSet { defaults.set(instantShare, forKey: Key.instantShare) }
+    }
     /// Last-used device/source selections, restored on next launch so the user
     /// doesn't have to re-pick (and so a virtual device isn't auto-selected).
     @Published var lastCameraID: String? {
@@ -217,6 +224,7 @@ final class Preferences: ObservableObject {
         canvasBackground = CanvasBackground(rawValue: defaults.string(forKey: Key.background) ?? "") ?? .none
         aspectMode = AspectRatioMode(rawValue: defaults.string(forKey: Key.aspectMode) ?? "") ?? .sixteenNine
         onboardingDone = defaults.bool(forKey: Key.onboardingDone)
+        instantShare = defaults.bool(forKey: Key.instantShare)
         lastCameraID = defaults.string(forKey: Key.lastCameraID)
         lastMicrophoneID = defaults.string(forKey: Key.lastMicID)
         lastMode = CaptureMode(rawValue: defaults.string(forKey: Key.lastMode) ?? "") ?? .screen

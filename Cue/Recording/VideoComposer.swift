@@ -437,6 +437,11 @@ enum VideoComposer {
             }
         }
 
+        // Drop the intermediate PCM mixdown (~11 MB/min) once both exports are
+        // done — it's only needed to feed the composition and audio sidecar.
+        try? FileManager.default.removeItem(
+            at: outputURL.deletingLastPathComponent().appendingPathComponent("mixed.caf"))
+
         return Output(url: outputURL, size: renderSize, audioURL: audioURL)
     }
 

@@ -134,7 +134,7 @@ export function renderPlayer(v) {
   <div class="layout">
     <div>
       <div class="card videoframe">
-        <video controls autoplay playsinline preload="metadata" src="${media}"></video>
+        <video id="player" controls autoplay playsinline preload="metadata" src="${media}"></video>
       </div>
       <div class="reactions" aria-hidden="true">
         <button>👍</button><button>🎉</button><button>😂</button><button>❤️</button><button>👀</button><button>🔥</button>
@@ -171,6 +171,37 @@ export function renderPlayer(v) {
     btn.classList.add('active');
     document.querySelectorAll('.tabbody [data-tab]').forEach(d=>d.hidden = d.dataset.tab!==name);
   }
+
+  // Media URLs may be short-lived presigned links. If playback errors (e.g. the
+  // URL expired while paused, or a seek lands past its TTL), fetch a fresh one
+  // and resume from where we were. Guard against loops with a small retry cap.
+  (function(){
+    var video = document.getElementById('player');
+    if (!video) return;
+    var share = ${JSON.stringify(v.shareURL)};
+    var retries = 0;
+    video.addEventListener('error', async function(){
+      if (retries >= 3) return;
+      retries++;
+      var at = video.currentTime || 0;
+      try {
+        var res = await fetch(share + '/media-url', { cache: 'no-store' });
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data.mediaURL) return;
+        var wasPlaying = !video.paused;
+        video.src = data.mediaURL;
+        video.load();
+        video.addEventListener('loadedmetadata', function once(){
+          video.removeEventListener('loadedmetadata', once);
+          try { video.currentTime = at; } catch (e) {}
+          if (wasPlaying) video.play().catch(function(){});
+        });
+      } catch (e) {}
+    });
+    // A successful load resets the retry budget for the next expiry.
+    video.addEventListener('playing', function(){ retries = 0; });
+  })();
 </script>
 </body></html>`;
 }
