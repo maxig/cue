@@ -111,6 +111,27 @@ final class CueBackendUploadService: UploadService {
         try await ownerRequest(path: "/api/videos/\(recording.id.uuidString.lowercased())/\(action)", method: "POST")
     }
 
+    /// Updates the recording's title on the share page (owner action).
+    func rename(to title: String, recording: Recording) async throws {
+        let base = backendBaseURL.trimmingTrailingSlash()
+        guard !base.isEmpty,
+              let url = URL(string: base + "/api/videos/\(recording.id.uuidString.lowercased())") else {
+            throw UploadError.notConfigured("backend URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !ownerToken.isEmpty {
+            request.setValue("Bearer \(ownerToken)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["title": title])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            throw UploadError.server(status: status, body: String(data: data, encoding: .utf8) ?? "")
+        }
+    }
+
     private func ownerRequest(path: String, method: String) async throws {
         let base = backendBaseURL.trimmingTrailingSlash()
         guard !base.isEmpty, let url = URL(string: base + path) else {

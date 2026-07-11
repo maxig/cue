@@ -164,6 +164,11 @@ struct SettingsView: View {
                 }
                 if settings.backend == .localStub {
                     Caption("Recordings stay on this Mac with a placeholder link. Choose “Cue server” to upload and get a working web link.")
+                } else {
+                    Divider().opacity(0.5)
+                    ToggleRow("Copy link when ready", isOn: Binding(
+                        get: { prefs.instantShare }, set: { prefs.instantShare = $0 }))
+                    Caption("When a recording finishes, enable its share link and copy it to the clipboard right away. Off keeps links private until you enable them.")
                 }
             }
 

@@ -16,7 +16,7 @@ import { jwtVerify, createRemoteJWKSet } from "jose";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
@@ -287,6 +287,20 @@ export default {
         const dv = decorate(request, env, v);
         dv.mediaURL = await resolveMediaURL(request, env, v);
         return json(dv);
+      }
+
+      // Owner: rename a recording (updates the share page title) ----------
+      if (oneMatch && method === "PATCH") {
+        const denied = await ownerError(request, env);
+        if (denied) return denied;
+        const id = decodeURIComponent(oneMatch[1]);
+        const body = await request.json().catch(() => ({}));
+        const title = typeof body.title === "string" ? body.title.trim() : "";
+        if (!title) return json({ error: "title required" }, { status: 400 });
+        const res = await env.DB.prepare("UPDATE videos SET title = ? WHERE id = ?")
+          .bind(title, id).run();
+        if (!res.meta.changes) return json({ error: "not found" }, { status: 404 });
+        return json({ id, title });
       }
 
       // Owner: delete a recording (R2 objects + metadata) -----------------

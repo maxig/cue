@@ -105,6 +105,8 @@ private struct LibraryRow: View {
 private struct RecordingDetailView: View {
     @EnvironmentObject private var app: AppState
     let recording: Recording
+    @State private var isRenaming = false
+    @State private var draftTitle = ""
 
     var body: some View {
         ScrollView {
@@ -118,6 +120,11 @@ private struct RecordingDetailView: View {
             .frame(maxWidth: 820)
             .frame(maxWidth: .infinity)
         }
+        .alert("Rename recording", isPresented: $isRenaming) {
+            TextField("Title", text: $draftTitle)
+            Button("Save") { Task { await app.rename(recording, to: draftTitle) } }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     private func isLinkDisabled(_ r: Recording) -> Bool {
@@ -127,8 +134,20 @@ private struct RecordingDetailView: View {
 
     private var headerBlock: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(recording.title)
-                .font(.system(size: 22, weight: .bold))
+            HStack(spacing: 8) {
+                Text(recording.title)
+                    .font(.system(size: 22, weight: .bold))
+                Button {
+                    draftTitle = recording.title
+                    isRenaming = true
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.secondaryText)
+                }
+                .buttonStyle(.plain)
+                .help("Rename")
+            }
             HStack(spacing: 8) {
                 Label(recording.createdAt.formatted(date: .abbreviated, time: .shortened),
                       systemImage: "calendar")

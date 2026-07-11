@@ -163,6 +163,14 @@ final class AppState: ObservableObject {
     func start() {
         guard !isBusy else { return }
 
+        // Refuse to start with almost no disk left — a recording that fills the
+        // volume mid-capture corrupts its own file. (~500 MB floor.)
+        if let free = availableDiskBytes(), free < 500_000_000 {
+            let human = ByteCountFormatter.string(fromByteCount: free, countStyle: .file)
+            errorMessage = "Only \(human) of disk space is free. Free up space before recording."
+            return
+        }
+
         if config.mode != .cameraOnly && !permissions.canRecordScreen {
             permissions.requestScreenRecording()
             if !permissions.canRecordScreen {
@@ -463,6 +471,14 @@ final class AppState: ObservableObject {
         return NSRect(x: cg.minX, y: height - cg.maxY, width: cg.width, height: cg.height)
     }
 
+    /// Free space (bytes) on the volume where recordings are written, or nil if
+    /// it can't be determined.
+    private func availableDiskBytes() -> Int64? {
+        let values = try? store.baseURL.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage
+    }
+
     private func handleStreamError(_ error: Error) {
         guard isRecording || isCountingDown else { return }
         errorMessage = "Recording stopped: \(error.localizedDescription)"
@@ -511,6 +527,22 @@ final class AppState: ObservableObject {
             working.share = .disabled(url: url)
             store.upsert(working)
             uploadProgress[recording.id] = nil
+
+            // Instant share (opt-in): enable the link right away and copy it, so
+            // the link is usable the moment the recording finishes (Loom-style).
+            if preferences.instantShare {
+                if uploadSettings.backend == .cueServer,
+                   let backend = uploadSettings.cueBackendService() {
+                    // Flip the link on server-side; if that fails, fall back to
+                    // just surfacing the (still-disabled) URL.
+                    if (try? await backend.setShareDisabled(false, recording: working)) != nil {
+                        working.share = .shared(url: url)
+                        store.upsert(working)
+                    }
+                }
+                lastShareURL = url
+                copyLink(url.absoluteString)
+            }
         } catch {
             working.share = .failed(reason: error.localizedDescription)
             store.upsert(working)
@@ -583,6 +615,20 @@ final class AppState: ObservableObject {
             store.upsert(working)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Renames a recording locally and, if it's on a Cue server, syncs the title
+    /// to the share page.
+    func rename(_ recording: Recording, to newTitle: String) async {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != recording.title else { return }
+        var working = recording
+        working.title = trimmed
+        store.upsert(working)
+        if recording.shareURL != nil, let backend = uploadSettings.cueBackendService() {
+            do { try await backend.rename(to: trimmed, recording: working) }
+            catch { errorMessage = error.localizedDescription }
         }
     }
 
