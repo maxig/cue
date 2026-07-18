@@ -265,6 +265,24 @@ export default {
         return json({ videos: (results || []).map((r) => decorate(request, env, rowToVideo(r))) });
       }
 
+      // Search titles + transcripts (owner). Exact-path check sits before the
+      // /api/videos/:id matcher so "search" isn't mistaken for a recording id.
+      if (pathname === "/api/videos/search" && method === "GET") {
+        const denied = await ownerError(request, env);
+        if (denied) return denied;
+        const q = (url.searchParams.get("q") || "").trim();
+        if (!q) return json({ q: "", videos: [] });
+        const rows = await searchVideos(env, q);
+        return json({
+          q,
+          videos: rows.map((r) => {
+            const dv = decorate(request, env, rowToVideo(r));
+            dv.snippet = transcriptSnippet(r.transcript, q);
+            return dv;
+          }),
+        });
+      }
+
       // Transcribe one recording (Workers AI / Whisper) -------------------
       const txMatch = pathname.match(/^\/api\/videos\/([^/]+)\/transcribe$/);
       if (txMatch && method === "POST") {
@@ -401,14 +419,20 @@ export default {
       if (pathname === "/app" && method === "GET") {
         const denied = await ownerError(request, env);
         if (denied) return html(renderAppLocked(), denied.status);
-        const { results } = await env.DB.prepare(
-          "SELECT * FROM videos ORDER BY created_at DESC"
-        ).all();
-        const videos = (results || []).map((r) => decorate(request, env, rowToVideo(r)));
+        const q = (url.searchParams.get("q") || "").trim();
+        const rows = q
+          ? await searchVideos(env, q)
+          : ((await env.DB.prepare("SELECT * FROM videos ORDER BY created_at DESC").all()).results || []);
+        const videos = rows.map((r) => {
+          const dv = decorate(request, env, rowToVideo(r));
+          if (q) dv.snippet = transcriptSnippet(r.transcript, q);
+          return dv;
+        });
         return html(renderApp(videos, {
           base: baseURL(request, env),
           flash: url.searchParams.get("flash") || "",
           error: url.searchParams.get("error") || "",
+          q,
         }));
       }
 
@@ -867,6 +891,34 @@ async function deleteComment(env, id, cid) {
   const res = await env.DB.prepare("DELETE FROM comments WHERE id = ? AND video_id = ?")
     .bind(cid, id).run();
   return !!res.meta.changes;
+}
+
+// --- Transcript search (owner) ----------------------------------------------
+
+// Search titles, transcripts and summaries with a LIKE scan — plenty at a
+// self-hosted scale, and no FTS table/triggers to keep in sync. % and _ in the
+// query are escaped so they match literally rather than as wildcards.
+async function searchVideos(env, q) {
+  const like = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM videos
+       WHERE title LIKE ?1 ESCAPE '\\'
+          OR transcript LIKE ?1 ESCAPE '\\'
+          OR summary LIKE ?1 ESCAPE '\\'
+       ORDER BY created_at DESC`
+  ).bind(like).all();
+  return results || [];
+}
+
+// A short transcript excerpt around the first match of q (for dashboard search
+// results), or "" when the match was only in the title/summary.
+function transcriptSnippet(transcript, q, radius = 80) {
+  if (!transcript) return "";
+  const i = transcript.toLowerCase().indexOf(q.toLowerCase());
+  if (i === -1) return "";
+  const start = Math.max(0, i - radius);
+  const end = Math.min(transcript.length, i + q.length + radius);
+  return (start > 0 ? "…" : "") + transcript.slice(start, end).trim() + (end < transcript.length ? "…" : "");
 }
 
 function arrayBufferToBase64(buffer) {

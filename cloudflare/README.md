@@ -253,7 +253,9 @@ npm run deploy
 ```
 
 **6.7 Open it.** Visit `https://cue.yourdomain.com/app`. Cloudflare asks you to
-log in; afterwards the dashboard loads. ✅
+log in; afterwards the dashboard loads. ✅ The dashboard has a **search box** that
+filters your library by title or transcript text (with a highlighted snippet of
+the match) — most useful once recordings have been transcribed.
 
 **How it stays safe:** the Worker independently **verifies** the Access token on
 every `/app` request (it checks the signature against your team's public keys and
@@ -430,6 +432,7 @@ archive.
 | `GET` | `/healthz` | public | health check |
 | `POST` | `/api/videos` | **owner** | register an upload (`objectKey`, optional `audioKey`, `bytes`) → `{ id, url }` |
 | `GET` | `/api/videos` | **owner** | list all recordings |
+| `GET` | `/api/videos/search?q=` | **owner** | search titles + transcripts → matches with snippets |
 | `GET` | `/api/videos/:id` | **owner** | fetch one recording |
 | `DELETE` | `/api/videos/:id` | **owner** | delete R2 objects + metadata |
 | `POST` | `/api/videos/:id/disable` · `/enable` | **owner** | turn the share link off / on |
