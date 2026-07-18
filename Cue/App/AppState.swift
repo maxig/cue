@@ -51,6 +51,8 @@ final class AppState: ObservableObject {
 
     // Sharing / library surface
     @Published var uploadProgress: [UUID: Double] = [:]
+    /// Id of the recording currently being re-rendered (post-record studio edit).
+    @Published var isRecomposing: UUID?
     @Published var lastShareURL: URL?
     @Published var justFinished: Recording?
     @Published var errorMessage: String?
@@ -500,6 +502,64 @@ final class AppState: ObservableObject {
             store.upsert(working)
             uploadProgress[recording.id] = nil
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Re-renders a recording's `final.mp4` from its retained raw tracks with a
+    /// new camera placement (post-record reposition/resize). Needs a stored plan
+    /// + a camera track. Drops the share back to local so the edit re-uploads.
+    func recompose(_ recording: Recording, placement: CameraPlacement) async {
+        guard var plan = recording.plan else {
+            errorMessage = "This recording predates post-edit support — re-record to enable it."
+            return
+        }
+        guard let cameraName = recording.cameraFileName else {
+            errorMessage = "No camera track to reposition."
+            return
+        }
+        let folder = store.folderURL(for: recording.id)
+        let screenURL = recording.screenFileName.map { folder.appendingPathComponent($0) }
+        let cameraURL = folder.appendingPathComponent(cameraName)
+        plan.cameraPlacement = placement
+
+        isRecomposing = recording.id
+        defer { isRecomposing = nil }
+        do {
+            let output = try await VideoComposer.compose(
+                screenURL: screenURL,
+                cameraURL: cameraURL,
+                bubbleShape: plan.bubbleShape,
+                mirrored: plan.mirrored,
+                cameraBackground: plan.cameraBackground,
+                corner: plan.corner,
+                padding: plan.padding,
+                background: plan.background,
+                aspectRatio: plan.aspectRatio.map { CGFloat($0) },
+                cameraStartOffset: plan.cameraStartOffset,
+                leadTrim: plan.leadTrim,
+                cameraPlacement: plan.cameraPlacement,
+                cameraHiddenRanges: plan.cameraHiddenRanges,
+                screenPauseSpans: plan.screenPauseSpans,
+                cameraPauseSpans: plan.cameraPauseSpans,
+                outputURL: folder.appendingPathComponent("final.mp4")
+            )
+            var working = recording
+            working.plan = plan
+            working.finalFileName = "final.mp4"
+            working.audioFileName = output.audioURL?.lastPathComponent ?? working.audioFileName
+            working.width = Int(output.size.width)
+            working.height = Int(output.size.height)
+            // The cloud copy is now stale; remove it and drop back to local so
+            // the user re-uploads the re-rendered clip.
+            if recording.shareURL != nil {
+                if let backend = uploadSettings.cueBackendService() {
+                    try? await backend.deleteRemote(recording: recording)
+                }
+                working.share = .local
+            }
+            store.upsert(working)
+        } catch {
+            errorMessage = "Re-render failed: \(error.localizedDescription)"
         }
     }
 

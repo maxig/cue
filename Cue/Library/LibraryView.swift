@@ -111,6 +111,7 @@ private struct RecordingDetailView: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
                 headerBlock
                 playerBlock
+                cameraStudioBlock
                 shareBlock
                 insightsBlock
             }
@@ -123,6 +124,16 @@ private struct RecordingDetailView: View {
     private func isLinkDisabled(_ r: Recording) -> Bool {
         if case .disabled = r.share { return true }
         return false
+    }
+
+    /// Post-record camera reposition/resize — only for recordings that have a
+    /// camera track and a saved composition plan (i.e. captured with post-edit
+    /// support). `.id` resets the editor's state when the selection changes.
+    @ViewBuilder
+    private var cameraStudioBlock: some View {
+        if recording.cameraFileName != nil, recording.plan != nil {
+            CameraStudioCard(recording: recording).id(recording.id)
+        }
     }
 
     private var headerBlock: some View {
@@ -260,6 +271,77 @@ private struct RecordingDetailView: View {
                     .background(Capsule().fill(Theme.accent.opacity(0.14)))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+// MARK: - Camera studio (post-record reposition/resize)
+
+/// Drag the camera bubble over a preview of the frame, set its size, then
+/// re-render `final.mp4` from the recording's retained raw tracks.
+private struct CameraStudioCard: View {
+    @EnvironmentObject private var app: AppState
+    let recording: Recording
+    @State private var placement: CameraPlacement
+
+    init(recording: Recording) {
+        self.recording = recording
+        _placement = State(initialValue: recording.plan?.cameraPlacement ?? .default)
+    }
+
+    private var busy: Bool { app.isRecomposing == recording.id }
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Camera position", systemImage: "person.crop.rectangle")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("Drag the bubble to reposition it and set its size, then re-render. The edit replaces the local clip and drops the share back to local so you can re-upload.")
+                    .font(.cueCaption)
+                    .foregroundStyle(Theme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                GeometryReader { geo in
+                    ZStack(alignment: .topLeading) {
+                        RecordingThumbnail(url: app.store.thumbnailURL(for: recording))
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(.white.opacity(0.08)))
+
+                        let d = max(20, geo.size.width * placement.size)
+                        Circle()
+                            .fill(Theme.accent.opacity(0.20))
+                            .overlay(Circle().strokeBorder(Theme.accent, lineWidth: 2))
+                            .frame(width: d, height: d)
+                            .position(x: placement.centerX * geo.size.width,
+                                      y: placement.centerY * geo.size.height)
+                            .gesture(
+                                DragGesture()
+                                    .onChanged { value in
+                                        placement.centerX = min(max(value.location.x / geo.size.width, 0), 1)
+                                        placement.centerY = min(max(value.location.y / geo.size.height, 0), 1)
+                                    }
+                            )
+                    }
+                }
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+
+                HStack(spacing: 10) {
+                    Text("Size").font(.cueCaption).foregroundStyle(Theme.secondaryText)
+                    Slider(value: $placement.size, in: 0.12...0.45)
+                }
+
+                Button {
+                    Task { await app.recompose(recording, placement: placement) }
+                } label: {
+                    Label(busy ? "Re-rendering…" : "Re-render with new position",
+                          systemImage: "wand.and.stars")
+                }
+                .buttonStyle(.prominentGlass)
+                .disabled(busy)
+            }
         }
     }
 }

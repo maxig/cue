@@ -17,6 +17,7 @@ final class CueVideoCompositorInstruction: NSObject, AVVideoCompositionInstructi
     let cameraTrackID: CMPersistentTrackID
     let bubbleShape: CameraBubbleShape
     let corner: CameraCorner
+    let cameraPlacement: CameraPlacement?
     let padding: CGFloat
     let background: CanvasBackground
     let mirrorBase: Bool
@@ -29,6 +30,7 @@ final class CueVideoCompositorInstruction: NSObject, AVVideoCompositionInstructi
          cameraTrackID: CMPersistentTrackID,
          bubbleShape: CameraBubbleShape,
          corner: CameraCorner,
+         cameraPlacement: CameraPlacement? = nil,
          padding: CGFloat,
          background: CanvasBackground,
          mirrorBase: Bool,
@@ -40,6 +42,7 @@ final class CueVideoCompositorInstruction: NSObject, AVVideoCompositionInstructi
         self.cameraTrackID = cameraTrackID
         self.bubbleShape = bubbleShape
         self.corner = corner
+        self.cameraPlacement = cameraPlacement
         self.padding = padding
         self.background = background
         self.mirrorBase = mirrorBase
@@ -106,7 +109,8 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
                     var camera = self.matte.composite(cameraBuffer, background: instruction.cameraBackground)
                     if instruction.mirrorOverlay { camera = camera.oriented(.upMirrored) }
                     let bubble = self.makeBubble(camera, shape: instruction.bubbleShape,
-                                                 corner: instruction.corner, renderSize: size)
+                                                 corner: instruction.corner,
+                                                 placement: instruction.cameraPlacement, renderSize: size)
                     result = bubble.composited(over: result)
                 }
 
@@ -188,8 +192,15 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
     // MARK: Camera bubble
 
     private func makeBubble(_ camera: CIImage, shape: CameraBubbleShape,
-                            corner: CameraCorner, renderSize: CGSize) -> CIImage {
-        let diameter = max(renderSize.width * 0.22, 180).rounded()
+                            corner: CameraCorner, placement: CameraPlacement?,
+                            renderSize: CGSize) -> CIImage {
+        let diameter: CGFloat = {
+            if let placement {
+                let frac = CGFloat(min(max(placement.size, 0.05), 0.9))
+                return max(80, (renderSize.width * frac)).rounded()
+            }
+            return max(renderSize.width * 0.22, 180).rounded()
+        }()
         let extent = camera.extent
         let side = min(extent.width, extent.height)
         let cropRect = CGRect(x: extent.midX - side / 2, y: extent.midY - side / 2, width: side, height: side)
@@ -203,14 +214,25 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
         let mask = roundedMask(width: diameter, height: diameter, radius: shape.cornerRadius(for: diameter))
         let masked = maskedImage(scaled, mask: mask, size: CGSize(width: diameter, height: diameter))
 
-        let margin = max(renderSize.width * 0.025, 24)
         let x: CGFloat
         let y: CGFloat
-        switch corner {
-        case .bottomLeft:  x = margin;                              y = margin
-        case .bottomRight: x = renderSize.width - diameter - margin; y = margin
-        case .topLeft:     x = margin;                              y = renderSize.height - diameter - margin
-        case .topRight:    x = renderSize.width - diameter - margin; y = renderSize.height - diameter - margin
+        if let placement {
+            // Normalized center (top-left origin) → CI space (bottom-left origin),
+            // clamped so the bubble stays fully on-frame.
+            let cx = CGFloat(min(max(placement.centerX, 0), 1)) * renderSize.width
+            let cyTop = CGFloat(min(max(placement.centerY, 0), 1)) * renderSize.height
+            let rawX = cx - diameter / 2
+            let rawY = (renderSize.height - cyTop) - diameter / 2     // flip Y
+            x = min(max(rawX, 0), max(0, renderSize.width - diameter)).rounded()
+            y = min(max(rawY, 0), max(0, renderSize.height - diameter)).rounded()
+        } else {
+            let margin = max(renderSize.width * 0.025, 24)
+            switch corner {
+            case .bottomLeft:  x = margin;                              y = margin
+            case .bottomRight: x = renderSize.width - diameter - margin; y = margin
+            case .topLeft:     x = margin;                              y = renderSize.height - diameter - margin
+            case .topRight:    x = renderSize.width - diameter - margin; y = renderSize.height - diameter - margin
+            }
         }
         return masked.transformed(by: CGAffineTransform(translationX: x, y: y))
     }
@@ -289,6 +311,7 @@ enum VideoComposer {
                         fps: Int = 30,
                         cameraStartOffset: Double?,
                         leadTrim: Double?,
+                        cameraPlacement: CameraPlacement? = nil,
                         cameraHiddenRanges: [ClosedRange<Double>] = [],
                         screenPauseSpans: [ClosedRange<Double>] = [],
                         cameraPauseSpans: [ClosedRange<Double>] = [],
@@ -403,6 +426,7 @@ enum VideoComposer {
                 cameraTrackID: cameraTrackID,
                 bubbleShape: bubbleShape,
                 corner: corner,
+                cameraPlacement: cameraPlacement,
                 padding: CGFloat(effPadding),
                 background: cameraIsBase ? .none : fillBackground,   // no canvas behind a camera-only clip
                 mirrorBase: mirrored && cameraIsBase,
