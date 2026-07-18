@@ -27,6 +27,71 @@ function fmtDate(iso) {
   }
 }
 
+// --- Timestamped transcript (from stored WebVTT) ----------------------------
+
+// Parse "MM:SS.mmm" / "HH:MM:SS.mmm" (comma or dot) into seconds.
+function vttTimeToSeconds(s) {
+  let m = s.match(/(\d{1,3}):(\d{1,2}):(\d{1,2})[.,](\d{1,3})/);
+  if (m) return (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) + (+m[4].padEnd(3, "0")) / 1000;
+  m = s.match(/(\d{1,3}):(\d{1,2})[.,](\d{1,3})/);
+  if (m) return (+m[1]) * 60 + (+m[2]) + (+m[3].padEnd(3, "0")) / 1000;
+  return null;
+}
+
+// Parse stored WebVTT (concatenated Whisper cues) into [{ start, text }].
+// Tolerant of single- or double-newline separation between cues.
+function parseVTT(vtt) {
+  const out = [];
+  let cur = null;
+  for (const raw of String(vtt || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line === "WEBVTT" || /^NOTE\b/.test(line)) continue;
+    const arrow = line.indexOf("-->");
+    if (arrow !== -1) {
+      if (cur && cur.text) out.push(cur);
+      const start = vttTimeToSeconds(line.slice(0, arrow));
+      cur = { start: start == null ? 0 : start, text: "" };
+    } else if (cur) {
+      cur.text = cur.text ? `${cur.text} ${line}` : line;
+    }
+  }
+  if (cur && cur.text) out.push(cur);
+  return out;
+}
+
+// Aggregate fine cues into readable, sentence-ish lines: keep a short complete
+// phrase on its own line, otherwise merge consecutive cues until a sentence end
+// (or hard caps), so the result reads like the subtitle blocks in a Loom
+// transcript rather than one word-soup paragraph.
+function groupTranscript(segments) {
+  const lines = [];
+  let cur = null;
+  const MIN = 45, HARD = 230, MAX_SECONDS = 14;
+  for (const seg of segments) {
+    if (!cur) cur = { start: seg.start, text: seg.text };
+    else cur.text += ` ${seg.text}`;
+    const endsSentence = /[.!?…]["')\]]?$/.test(cur.text);
+    const tooLong = cur.text.length >= HARD;
+    const spanned = (seg.start - cur.start) >= MAX_SECONDS && cur.text.length >= MIN;
+    if ((endsSentence && cur.text.length >= MIN) || tooLong || spanned) {
+      lines.push(cur);
+      cur = null;
+    }
+  }
+  if (cur && cur.text) lines.push(cur);
+  return lines;
+}
+
+// Build the Loom-style timestamped transcript markup, or null if there's no
+// usable VTT. Each timestamp reuses the player's seekTo().
+function renderTimedTranscript(vtt) {
+  const lines = groupTranscript(parseVTT(vtt));
+  if (!lines.length) return null;
+  return `<div class="ts-transcript">` + lines.map((l) =>
+    `<div class="tline"><button type="button" class="tspill" onclick="seekTo(${l.start.toFixed(2)})">${esc(fmtDuration(l.start))}</button><div class="ttext">${esc(l.text)}</div></div>`
+  ).join("") + `</div>`;
+}
+
 const BASE_CSS = `
   :root {
     --bg: #0b0d12;
@@ -164,6 +229,10 @@ const ENGAGE_CSS = `
   .linklike { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0; }
   .linklike:hover { color: #ff8a8a; }
   .actline { color: var(--text); font-size: 13.5px; }
+  .ts-transcript { display: grid; gap: 12px; max-height: 360px; overflow: auto; padding-right: 4px; }
+  .tline { display: grid; grid-template-columns: 46px 1fr; gap: 10px; align-items: start; }
+  .tline .tspill { justify-self: start; margin-top: 1px; }
+  .ttext { color: var(--text); line-height: 1.55; font-size: 13.5px; }
 `;
 
 // Client logic shared by the public player and the owner view. Injected after a
@@ -322,11 +391,14 @@ export function renderPlayer(v, opts = {}) {
   const share = esc(v.shareURL);
   const media = esc(v.mediaURL);
 
-  const transcriptBody = v.transcript
-    ? `<div class="transcript">${esc(v.transcript)}</div>`
-    : (owner
-        ? `No transcript yet — use <b>Transcribe</b> above to generate one.`
-        : `A searchable, word-level transcript will appear here. <span class="soon">Phase 2</span>`);
+  const timedTranscript = v.transcriptVtt ? renderTimedTranscript(v.transcriptVtt) : null;
+  const transcriptBody = timedTranscript
+    ? timedTranscript
+    : (v.transcript
+        ? `<div class="transcript">${esc(v.transcript)}</div>`
+        : (owner
+            ? `No transcript yet — use <b>Transcribe</b> above to generate one.`
+            : `A searchable, word-level transcript will appear here. <span class="soon">Phase 2</span>`));
   const summaryBody = v.summary
     ? `<div class="transcript">${esc(v.summary)}</div>`
     : (owner
