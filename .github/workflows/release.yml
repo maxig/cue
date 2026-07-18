@@ -207,6 +207,12 @@ jobs:
         env:
           DMG_PATH: ${{ steps.package.outputs.dmg }}
         run: |
+          codesign \
+            --force \
+            --sign "Developer ID Application" \
+            --timestamp \
+            "$DMG_PATH"
+          codesign --verify --strict --verbose=2 "$DMG_PATH"
           xcrun notarytool submit "$DMG_PATH" \
             --key "$RUNNER_TEMP/AuthKey.p8" \
             --key-id "$NOTARY_KEY_ID" \
