@@ -411,6 +411,10 @@ curl -X POST -H "Authorization: Bearer <OWNER_TOKEN>" \
 - Override the source with `?key=<object-key>`; force a language with `?lang=en`.
 - **Caveats:** the Worker pulls the object into memory, so it's capped at 100 MB
   (`MAX_TRANSCRIBE_BYTES`); free tier is 10k Neurons/day.
+- **Remove fillers (declutter).** `POST /api/videos/:id/declutter` — or the **Remove
+  fillers** button on the dashboard / per-video view — strips "um/uh/er…" plus a couple
+  of filler phrases from the stored transcript **and** its VTT, in place (no Workers AI
+  / Neurons used). Re-transcribe to restore the raw text.
 
 ---
 
@@ -437,6 +441,7 @@ archive.
 | `DELETE` | `/api/videos/:id` | **owner** | delete R2 objects + metadata |
 | `POST` | `/api/videos/:id/disable` · `/enable` | **owner** | turn the share link off / on |
 | `POST` | `/api/videos/:id/transcribe` · `/summarize` | **owner** | transcribe / summarize (Workers AI) |
+| `POST` | `/api/videos/:id/declutter` | **owner** | strip filler words (um/uh…) from the transcript |
 | `GET` · `POST` | `/app` | **owner / Access** | private dashboard (list + Enable/Disable/Delete) |
 | `GET` · `POST` | `/app/v/:id` | **owner / Access** | per-video owner view + actions + comment moderation |
 | `GET` | `/app/file/:key` | **owner / Access** | stream bytes for the owner (plays even while disabled) |

@@ -299,6 +299,14 @@ export default {
         return await summarizeHTTP(decodeURIComponent(sumMatch[1]), env);
       }
 
+      // Remove filler words from one recording's transcript (Workers AI-free) --
+      const declMatch = pathname.match(/^\/api\/videos\/([^/]+)\/declutter$/);
+      if (declMatch && method === "POST") {
+        const denied = await ownerError(request, env);
+        if (denied) return denied;
+        return await declutterHTTP(decodeURIComponent(declMatch[1]), env);
+      }
+
       // Owner: disable / enable a share link ------------------------------
       const toggleMatch = pathname.match(/^\/api\/videos\/([^/]+)\/(disable|enable)$/);
       if (toggleMatch && method === "POST") {
@@ -393,6 +401,9 @@ export default {
           } else if (action === "summarize") {
             await summarizeVideo(env, row);
             flash = "Summary generated.";
+          } else if (action === "declutter") {
+            await declutterVideo(env, row);
+            flash = "Filler words removed.";
           } else {
             throw new Error("unknown action");
           }
@@ -468,6 +479,11 @@ export default {
               await summarizeVideo(env, row);
               flash = "Summary generated.";
             }
+          } else if (action === "declutter") {
+            const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
+            if (!row) throw new Error("Recording not found.");
+            await declutterVideo(env, row);
+            flash = "Filler words removed.";
           }
         } catch (e) {
           error = String((e && e.message) || e);
@@ -688,6 +704,69 @@ async function summarizeHTTP(id, env) {
   try {
     const summary = await summarizeVideo(env, row);
     return json({ id, summary });
+  } catch (e) {
+    return json({ error: String((e && e.message) || e) }, { status: 500 });
+  }
+}
+
+// --- Filler-word removal (transcript-level "declutter") ---------------------
+
+// Strip vocal disfluencies ("um", "uh", "er"…) and a couple of common filler
+// phrases from a line of transcript, tidying leftover spacing/punctuation.
+// Conservative by design: it deletes known fillers only, never rewrites wording.
+function removeFillers(text) {
+  if (!text || !text.trim()) return text;
+  let t = ` ${text} `;
+  t = t.replace(/\s+\b(?:um+|uh+|uhm|erm|er+|ah+|hmm+|hm|mhm|mm+)\b\s*,?/gi, " ");
+  t = t.replace(/\s+\b(?:you know|i mean)\b\s*,?/gi, " ");
+  t = t.replace(/\s{2,}/g, " ")
+       .replace(/\s+([,.!?;:])/g, "$1")   // no space before punctuation
+       .replace(/,\s*([.!?;:])/g, "$1")   // comma swallowed by following punctuation
+       .replace(/,\s*,/g, ",")            // collapse doubled commas
+       .replace(/^[\s,;:]+/, "")          // drop a stray leading comma left by a removed opener
+       .trim();
+  return t || text;
+}
+
+// Clean every cue's text in a WebVTT blob, leaving timestamp lines intact so the
+// timestamped transcript stays aligned.
+function cleanVttFillers(vtt) {
+  if (!vtt) return vtt;
+  return String(vtt).split(/\r?\n/).map((line) => {
+    const t = line.trim();
+    if (!t || t === "WEBVTT" || t.includes("-->") || /^NOTE\b/.test(t)) return line;
+    return removeFillers(line);
+  }).join("\n");
+}
+
+// Owner action: remove filler words from a recording's transcript (and its VTT),
+// transcribing first if needed. Edits in place — re-transcribe restores the raw
+// text. Returns the cleaned transcript.
+async function declutterVideo(env, row) {
+  let transcript = row.transcript;
+  let vtt = row.transcript_vtt;
+  if (!transcript) {
+    const r = await transcribeVideo(env, row, {});
+    transcript = r.text;
+    vtt = r.vtt;
+  }
+  if (!transcript || !transcript.trim()) {
+    throw new Error("nothing to declutter — no transcript (is there audio in this recording?).");
+  }
+  const cleanText = removeFillers(transcript);
+  const cleanVtt = cleanVttFillers(vtt);
+  await env.DB.prepare("UPDATE videos SET transcript = ?, transcript_vtt = ? WHERE id = ?")
+    .bind(cleanText, cleanVtt, row.id).run();
+  return cleanText;
+}
+
+// HTTP wrapper for POST /api/videos/:id/declutter.
+async function declutterHTTP(id, env) {
+  const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
+  if (!row) return json({ error: "not found" }, { status: 404 });
+  try {
+    const text = await declutterVideo(env, row);
+    return json({ id, text, word_count: wordCount(text) });
   } catch (e) {
     return json({ error: String((e && e.message) || e) }, { status: 500 });
   }
