@@ -186,7 +186,8 @@ final class AppState: ObservableObject {
                                             corner: self.preferences.cameraCorner,
                                             padding: self.preferences.screenPadding,
                                             background: self.preferences.canvasBackground,
-                                            aspectMode: self.preferences.aspectMode)
+                                            aspectMode: self.preferences.aspectMode,
+                                            fps: self.preferences.captureFPS)
                 if seconds <= 0 { self.enterRecording() }
             } catch {
                 self.errorMessage = error.localizedDescription

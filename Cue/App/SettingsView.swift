@@ -74,6 +74,16 @@ struct SettingsView: View {
                 .labelsHidden().fixedSize()
             }
             Divider().opacity(0.5)
+            LabeledRow("Frame rate") {
+                Picker("", selection: Binding(get: { prefs.captureFPS }, set: { prefs.captureFPS = $0 })) {
+                    Text("30 fps").tag(30); Text("60 fps").tag(60)
+                }
+                .labelsHidden().fixedSize()
+            }
+            Caption(prefs.captureFPS == 60
+                    ? "Smoother motion for fast-moving content; larger files."
+                    : "Standard 30 fps — smaller files, ideal for most screen recordings.")
+            Divider().opacity(0.5)
             ToggleRow("Capture system audio",
                       isOn: $app.config.captureSystemAudio)
         }
