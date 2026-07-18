@@ -10,8 +10,27 @@
 		CUE0000000000000000000005 /* Cue.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Cue.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		CUE0000000000000000000010 /* Exceptions for "Cue" folder in "Cue" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = CUE0000000000000000000004 /* Cue */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		CUE0000000000000000000006 /* Cue */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Cue; sourceTree = "<group>"; };
+		CUE0000000000000000000006 /* Cue */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				CUE0000000000000000000010 /* Exceptions for "Cue" folder in "Cue" target */,
+			);
+			explicitFileTypes = {};
+			explicitFolders = ();
+			path = Cue;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */

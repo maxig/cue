@@ -507,8 +507,13 @@ final class AppState: ObservableObject {
 
     /// Re-renders a recording's `final.mp4` from its retained raw tracks with a
     /// new camera placement (post-record reposition/resize). Needs a stored plan
-    /// + a camera track. Drops the share back to local so the edit re-uploads.
+    /// + a camera track. The new media is composed in a temporary folder so a
+    /// failed edit cannot destroy the existing final video.
     func recompose(_ recording: Recording, placement: CameraPlacement) async {
+        guard isRecomposing == nil else {
+            errorMessage = "Another recording is already being re-rendered."
+            return
+        }
         guard var plan = recording.plan else {
             errorMessage = "This recording predates post-edit support — re-record to enable it."
             return
@@ -521,10 +526,14 @@ final class AppState: ObservableObject {
         let screenURL = recording.screenFileName.map { folder.appendingPathComponent($0) }
         let cameraURL = folder.appendingPathComponent(cameraName)
         plan.cameraPlacement = placement
+        let workFolder = folder.appendingPathComponent(".recompose-\(UUID().uuidString)", isDirectory: true)
 
         isRecomposing = recording.id
         defer { isRecomposing = nil }
         do {
+            try FileManager.default.createDirectory(at: workFolder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: workFolder) }
+
             let output = try await VideoComposer.compose(
                 screenURL: screenURL,
                 cameraURL: cameraURL,
@@ -535,31 +544,77 @@ final class AppState: ObservableObject {
                 padding: plan.padding,
                 background: plan.background,
                 aspectRatio: plan.aspectRatio.map { CGFloat($0) },
+                fps: plan.fps ?? 30,
                 cameraStartOffset: plan.cameraStartOffset,
                 leadTrim: plan.leadTrim,
                 cameraPlacement: plan.cameraPlacement,
                 cameraHiddenRanges: plan.cameraHiddenRanges,
                 screenPauseSpans: plan.screenPauseSpans,
                 cameraPauseSpans: plan.cameraPauseSpans,
-                outputURL: folder.appendingPathComponent("final.mp4")
+                outputURL: workFolder.appendingPathComponent("final.mp4")
             )
+
+            let finalURL = folder.appendingPathComponent("final.mp4")
+            try replaceFile(at: finalURL, with: output.url)
+            if let audioURL = output.audioURL {
+                try replaceFile(at: folder.appendingPathComponent("audio.m4a"), with: audioURL)
+            }
+
             var working = recording
             working.plan = plan
             working.finalFileName = "final.mp4"
-            working.audioFileName = output.audioURL?.lastPathComponent ?? working.audioFileName
+            if output.audioURL != nil { working.audioFileName = "audio.m4a" }
             working.width = Int(output.size.width)
             working.height = Int(output.size.height)
-            // The cloud copy is now stale; remove it and drop back to local so
-            // the user re-uploads the re-rendered clip.
+            working.thumbnailFileName = await generateThumbnail(for: recording.id, sourceURL: finalURL)
+                ?? working.thumbnailFileName
+
+            // The cloud copy is now stale. Only mark it local after confirmed
+            // deletion; otherwise keep the truthful remote status and warn that
+            // the old shared version still exists.
+            var cloudWarning: String?
             if recording.shareURL != nil {
                 if let backend = uploadSettings.cueBackendService() {
-                    try? await backend.deleteRemote(recording: recording)
+                    do {
+                        try await backend.deleteRemote(recording: recording)
+                        working.share = .local
+                    } catch {
+                        cloudWarning = "The edit was saved locally, but the previous cloud copy could not be removed: \(error.localizedDescription)"
+                    }
+                } else {
+                    cloudWarning = "The edit was saved locally. The previous cloud copy is still online; switch to the Cue server backend to remove it, or re-upload the edit."
                 }
-                working.share = .local
             }
             store.upsert(working)
+            if let cloudWarning { errorMessage = cloudWarning }
         } catch {
             errorMessage = "Re-render failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func replaceFile(at destination: URL, with source: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: destination.path) {
+            _ = try fm.replaceItemAt(destination, withItemAt: source)
+        } else {
+            try fm.moveItem(at: source, to: destination)
+        }
+    }
+
+    private func generateThumbnail(for id: UUID, sourceURL: URL) async -> String? {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: sourceURL))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 720, height: 720)
+        do {
+            let image = try await generator.image(at: CMTime(seconds: 0.4, preferredTimescale: 600)).image
+            let rep = NSBitmapImageRep(cgImage: image)
+            guard let data = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.82]) else {
+                return nil
+            }
+            try data.write(to: store.folderURL(for: id).appendingPathComponent("thumb.jpg"), options: .atomic)
+            return "thumb.jpg"
+        } catch {
+            return nil
         }
     }
 

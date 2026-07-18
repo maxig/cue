@@ -50,6 +50,9 @@ struct CompositionPlan: Codable, Hashable {
     var padding: Double
     var background: CanvasBackground
     var aspectRatio: Double?
+    /// Render rate used for the original composition. Optional so plans saved
+    /// before the 30/60 fps setting was added still decode and default to 30.
+    var fps: Int?
     var cameraStartOffset: Double?
     var leadTrim: Double?
     var cameraHiddenRanges: [ClosedRange<Double>]

@@ -32,9 +32,9 @@ Worker that also does AI transcription).
 - 🤖 **AI transcription** — Whisper via Workers AI on the Cloudflare backend.
 - ✨ **Liquid Glass UI** — adopts Apple's macOS 26 design language, with a tuned fallback on macOS 15.
 
-> **Status:** Phase 1 — the runnable menubar app and the full sharing pipeline
-> work today. Studio polish (auto-zoom, canvas backgrounds) and collaboration
-> (reactions, comments, teams) are on the [roadmap](#-roadmap).
+> **Status:** Phase 2 in progress — the native recording and sharing pipeline is
+> complete, and AI, Studio editing, reactions, and comments are available today.
+> Smart chapters, auto-zoom, and team features remain on the [roadmap](#-roadmap).
 
 ---
 
@@ -44,21 +44,23 @@ Worker that also does AI transcription).
 
 - One-click recording from the menu bar with a live recording overlay.
 - Capture modes: **full screen**, **single window**, **selected region**, **camera-only**.
+- Configurable **30 or 60 fps** capture, with the final composition rendered at the selected rate.
 - Screen, system audio, microphone, and camera are recorded as **separate tracks**,
   then composed into a single shareable **`final.mp4`** (camera as a shaped PiP, audio mixed).
-- A configurable **camera bubble** (circle / rounded-square / square, sized in Settings).
+- A configurable **camera bubble** (circle / rounded-square / square) plus post-record positioning and sizing.
+- Custom aspect ratios, padding, and canvas backgrounds for polished screen recordings.
 - Pluggable sharing via three backends — local-only, bucket-only, or the full Cue server.
 - A minimalist **web player** page per recording, with a unique share URL.
 - **Owner controls**: enable/disable a link, remove from cloud, or delete everywhere.
-- **AI transcription** (Cloudflare backend) — Whisper turns the audio sidecar into
-  a searchable transcript shown in the player.
+- **AI transcription and summaries** (Cloudflare backend), with clickable timestamped transcripts,
+  owner-dashboard transcript search, and transcript-level filler-word removal.
+- Timestamped emoji reactions and threaded viewer comments in the web player.
 - Secrets (S3 keys, owner token) live in the **macOS Keychain**, never on disk in clear.
 
 **On the roadmap** → see [`docs/PRODUCT.md`](docs/PRODUCT.md)
 
-- AI summaries, smart chapters, and filler-word removal.
-- Studio mode: post-recording camera repositioning, custom canvas backgrounds, auto-zoom on click.
-- Interactive player: timestamped emoji reactions and threaded comments.
+- Smart chapters and AI-assisted editing.
+- Studio auto-zoom and click effects (pointer/click capture metadata is already retained).
 - Team workspaces, shared libraries, SSO.
 
 ---
@@ -205,9 +207,9 @@ docs/                # product spec, research, design notes
 
 | Phase | Focus |
 | --- | --- |
-| **1 — Core** *(here)* | Menubar capture, compositing, self-hosted sharing, web player, transcription |
-| **2 — AI & Studio** | Summaries, smart chapters, filler-word removal, camera repositioning, canvas backgrounds |
-| **3 — Collaboration** | Timestamped reactions & comments, team workspaces, global search, SSO |
+| **1 — Core** *(complete)* | Menubar capture, compositing, self-hosted sharing, web player, transcription |
+| **2 — AI & Studio** *(in progress)* | Delivered: summaries, filler removal, camera repositioning, canvas backgrounds. Next: smart chapters and auto-zoom |
+| **3 — Collaboration** *(in progress)* | Delivered: timestamped reactions and comments. Next: team workspaces, global search, SSO |
 
 Full detail in [`docs/PRODUCT.md`](docs/PRODUCT.md).
 

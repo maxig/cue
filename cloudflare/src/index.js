@@ -139,16 +139,15 @@ function decorate(request, env, v) {
   };
 }
 
-// Constant-time string compare so a wrong token can't be recovered byte-by-byte
-// from response timing. Bails on a length mismatch (the token length isn't secret).
-function timingSafeEqual(a, b) {
+// Hash to a fixed length, then use the runtime's constant-time comparison so
+// neither token contents nor token length affect the comparison path.
+async function timingSafeEqual(a, b) {
   const enc = new TextEncoder();
-  const ab = enc.encode(a);
-  const bb = enc.encode(b);
-  if (ab.length !== bb.length) return false;
-  let diff = 0;
-  for (let i = 0; i < ab.length; i++) diff |= ab[i] ^ bb[i];
-  return diff === 0;
+  const [ah, bh] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  return crypto.subtle.timingSafeEqual(ah, bh);
 }
 
 // Cloudflare Access (Zero Trust) — lets the owner open the /app dashboard in a
@@ -198,7 +197,7 @@ async function verifyAccess(request, env) {
 async function ownerError(request, env) {
   const expected = env.OWNER_TOKEN;
   const got = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-  if (expected && got && timingSafeEqual(got, expected)) return null;
+  if (expected && got && await timingSafeEqual(got, expected)) return null;
   if (await verifyAccess(request, env)) return null;
   const accessConfigured = !!(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD);
   if (!expected && !accessConfigured) {
@@ -725,7 +724,7 @@ function removeFillers(text) {
        .replace(/,\s*,/g, ",")            // collapse doubled commas
        .replace(/^[\s,;:]+/, "")          // drop a stray leading comma left by a removed opener
        .trim();
-  return t || text;
+  return t;
 }
 
 // Clean every cue's text in a WebVTT blob, leaving timestamp lines intact so the
@@ -944,7 +943,7 @@ async function handleDeleteComment(id, cid, request, env) {
     .bind(cid, id).first();
   if (!row) return json({ error: "not found" }, { status: 404, headers: NO_STORE });
   const isOwner = !(await ownerError(request, env));
-  const isAuthor = !!(viewerId && row.viewer_id && timingSafeEqual(viewerId, row.viewer_id));
+  const isAuthor = !!(viewerId && row.viewer_id && await timingSafeEqual(viewerId, row.viewer_id));
   if (!isOwner && !isAuthor) return json({ error: "forbidden" }, { status: 403, headers: NO_STORE });
   await env.DB.prepare("DELETE FROM comments WHERE id = ?").bind(cid).run();
   return json({ deleted: cid }, { headers: NO_STORE });

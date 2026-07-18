@@ -6,7 +6,14 @@ import CoreGraphics
 
 // MARK: - Custom video compositor (background + padded screen + camera PiP)
 
-final class CueVideoCompositorInstruction: NSObject, AVVideoCompositionInstructionProtocol {
+/// AVFoundation invokes its media callbacks on queues it owns. These wrapped
+/// objects are confined to those queues even though the framework types have
+/// not adopted Swift's `Sendable` annotation.
+private struct UncheckedSendable<Value>: @unchecked Sendable {
+    let value: Value
+}
+
+final class CueVideoCompositorInstruction: NSObject, AVVideoCompositionInstructionProtocol, @unchecked Sendable {
     let timeRange: CMTimeRange
     let enablePostProcessing = false
     let containsTweening = true
@@ -67,10 +74,10 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
     /// `renderQueue`, so a single matte (reused Vision request) is safe.
     private let matte = CameraMatte(quality: .balanced)
 
-    var sourcePixelBufferAttributes: [String: Any]? = [
+    var sourcePixelBufferAttributes: [String: any Sendable]? = [
         kCVPixelBufferPixelFormatTypeKey as String: [Int(kCVPixelFormatType_32BGRA)]
     ]
-    var requiredPixelBufferAttributesForRenderContext: [String: Any] = [
+    var requiredPixelBufferAttributesForRenderContext: [String: any Sendable] = [
         kCVPixelBufferPixelFormatTypeKey as String: [Int(kCVPixelFormatType_32BGRA)]
     ]
 
@@ -441,15 +448,11 @@ enum VideoComposer {
                                                 presetName: AVAssetExportPresetHighestQuality) else {
             throw RecordingError.compositionFailed("exporter unavailable")
         }
-        export.outputURL = outputURL
-        export.outputFileType = .mp4
         export.videoComposition = videoComposition
-
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            export.exportAsynchronously { continuation.resume() }
-        }
-        guard export.status == .completed else {
-            throw RecordingError.compositionFailed(export.error?.localizedDescription ?? "export failed")
+        do {
+            try await export.export(to: outputURL, as: .mp4)
+        } catch {
+            throw RecordingError.compositionFailed(error.localizedDescription)
         }
 
         // Audio-only sidecar for transcription. Exporting the same composition
@@ -474,12 +477,8 @@ enum VideoComposer {
                                                 presetName: AVAssetExportPresetAppleM4A) else {
             return false
         }
-        export.outputURL = outputURL
-        export.outputFileType = .m4a
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            export.exportAsynchronously { continuation.resume() }
-        }
-        return export.status == .completed
+        try await export.export(to: outputURL, as: .m4a)
+        return true
     }
 
     /// Returns the sub-ranges of `[start, end]` that remain after removing
@@ -620,14 +619,17 @@ enum AudioMixer {
         writer.startSession(atSourceTime: .zero)
 
         let q = DispatchQueue(label: "com.max.Cue.AudioMixer")
+        let sendableInput = UncheckedSendable(value: writerInput)
+        let sendableOutput = UncheckedSendable(value: mixOutput)
+        let sendableWriter = UncheckedSendable(value: writer)
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            writerInput.requestMediaDataWhenReady(on: q) {
-                while writerInput.isReadyForMoreMediaData {
-                    if let sample = mixOutput.copyNextSampleBuffer() {
-                        writerInput.append(sample)
+            sendableInput.value.requestMediaDataWhenReady(on: q) {
+                while sendableInput.value.isReadyForMoreMediaData {
+                    if let sample = sendableOutput.value.copyNextSampleBuffer() {
+                        sendableInput.value.append(sample)
                     } else {
-                        writerInput.markAsFinished()
-                        writer.finishWriting { continuation.resume() }
+                        sendableInput.value.markAsFinished()
+                        sendableWriter.value.finishWriting { continuation.resume() }
                         return
                     }
                 }

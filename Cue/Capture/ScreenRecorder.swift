@@ -13,7 +13,7 @@ import QuartzCore
 /// (started at the first video frame's presentation timestamp), and every
 /// sample — video, system audio, mic — is appended at its real PTS on the
 /// shared ScreenCaptureKit clock. There is no post-hoc re-timing of audio.
-final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
+final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
 
     struct Options {
         var filter: SCContentFilter

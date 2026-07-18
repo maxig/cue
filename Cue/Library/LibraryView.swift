@@ -289,7 +289,12 @@ private struct CameraStudioCard: View {
         _placement = State(initialValue: recording.plan?.cameraPlacement ?? .default)
     }
 
-    private var busy: Bool { app.isRecomposing == recording.id }
+    private var busy: Bool { app.isRecomposing != nil }
+
+    private var previewAspectRatio: CGFloat {
+        guard let width = recording.width, let height = recording.height, height > 0 else { return 16.0 / 9.0 }
+        return CGFloat(width) / CGFloat(height)
+    }
 
     var body: some View {
         GlassCard {
@@ -319,13 +324,14 @@ private struct CameraStudioCard: View {
                             .gesture(
                                 DragGesture()
                                     .onChanged { value in
-                                        placement.centerX = min(max(value.location.x / geo.size.width, 0), 1)
-                                        placement.centerY = min(max(value.location.y / geo.size.height, 0), 1)
+                                        let radius = placement.size / 2
+                                        placement.centerX = min(max(value.location.x / geo.size.width, radius), 1 - radius)
+                                        placement.centerY = min(max(value.location.y / geo.size.height, radius), 1 - radius)
                                     }
                             )
                     }
                 }
-                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .aspectRatio(previewAspectRatio, contentMode: .fit)
                 .frame(maxWidth: .infinity)
 
                 HStack(spacing: 10) {

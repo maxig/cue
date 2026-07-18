@@ -9,7 +9,7 @@ import QuartzCore
 /// written to its own `camera.mov` (Option A separate tracks); audio is only
 /// included in camera-only mode (otherwise it comes from the screen stream).
 final class CameraEngine: NSObject, AVCaptureFileOutputRecordingDelegate,
-                          AVCaptureVideoDataOutputSampleBufferDelegate {
+                          AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
 
     /// Exposed so the bubble's `AVCaptureVideoPreviewLayer` can attach.
     let session = AVCaptureSession()

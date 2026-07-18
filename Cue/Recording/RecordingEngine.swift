@@ -84,7 +84,7 @@ final class RecordingEngine: ObservableObject {
         self.screenPadding = padding
         self.canvasBackground = background
         self.aspectMode = aspectMode
-        self.captureFPS = fps
+        self.captureFPS = fps == 60 ? 60 : 30
         self.usedCamera = false
         self.usedScreen = false
         self.contentStartAnchor = nil
@@ -94,16 +94,6 @@ final class RecordingEngine: ObservableObject {
         self.cameraDisabledRanges = []
         self.cameraDisableStart = nil
         self.cameraIsOn = true
-
-        // Capture the pointer path + clicks for display recordings (consumed by
-        // the cinematic post-effects). Window / camera-only modes are skipped.
-        captureDisplayFrame = nil
-        if config.mode != .window, config.mode != .cameraOnly,
-           let displayID = config.display?.scDisplay.displayID,
-           let frame = Self.screenFrame(for: displayID) {
-            captureDisplayFrame = frame
-            mouseActivity.start()
-        }
 
         let micID = (config.microphoneEnabled && config.microphone?.isNone == false)
             ? config.microphone?.id : nil
@@ -118,7 +108,7 @@ final class RecordingEngine: ObservableObject {
                 filter: filter,
                 width: width,
                 height: height,
-                fps: fps,
+                fps: captureFPS,
                 captureSystemAudio: config.captureSystemAudio,
                 captureMicrophone: micID != nil,
                 microphoneDeviceID: micID,
@@ -134,6 +124,16 @@ final class RecordingEngine: ObservableObject {
         if wantsCamera, config.camera?.isNone == false {
             camera.beginRecording(to: folder.appendingPathComponent("camera.mov"))
             usedCamera = true
+        }
+
+        // Start pointer monitoring only after capture setup succeeds; otherwise
+        // a failed start could leave a global event monitor installed.
+        captureDisplayFrame = nil
+        if config.mode != .window, config.mode != .cameraOnly,
+           let displayID = config.display?.scDisplay.displayID,
+           let frame = Self.screenFrame(for: displayID) {
+            captureDisplayFrame = frame
+            mouseActivity.start()
         }
 
         startDate = Date()
@@ -333,6 +333,7 @@ final class RecordingEngine: ObservableObject {
             padding: screenPadding,
             background: canvasBackground,
             aspectRatio: aspectMode.ratio.map { Double($0) },
+            fps: captureFPS,
             cameraStartOffset: cameraOffset,
             leadTrim: leadTrim,
             cameraHiddenRanges: cameraDisabledRanges,
@@ -368,6 +369,8 @@ final class RecordingEngine: ObservableObject {
         folder = nil
         usedCamera = false
         usedScreen = false
+        captureDisplayFrame = nil
+        captureFPS = 30
     }
 
     // MARK: Helpers
