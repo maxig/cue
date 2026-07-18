@@ -6,6 +6,10 @@
 	objectVersion = 71;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		C0DEC0DE0000000000000101 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = C0DEC0DE0000000000000103 /* Sparkle */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		CUE0000000000000000000005 /* Cue.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Cue.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -38,6 +42,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C0DEC0DE0000000000000101 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -79,6 +84,9 @@
 				CUE0000000000000000000006 /* Cue */,
 			);
 			name = Cue;
+			packageProductDependencies = (
+				C0DEC0DE0000000000000103 /* Sparkle */,
+			);
 			productName = Cue;
 			productReference = CUE0000000000000000000005 /* Cue.app */;
 			productType = "com.apple.product-type.application";
@@ -108,6 +116,9 @@
 			);
 			mainGroup = CUE0000000000000000000002;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				C0DEC0DE0000000000000102 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			productRefGroup = CUE0000000000000000000003 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -239,14 +250,15 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = app_icon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_IDENTITY = 4AEAD73BD7BA1203380F3FE11B421CE0F6CD6A36;
+				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = 8EDFC73F9M;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
+				EXTRACT_APP_INTENTS_METADATA = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Cue/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Cue;
@@ -275,14 +287,16 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = app_icon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_IDENTITY = 4AEAD73BD7BA1203380F3FE11B421CE0F6CD6A36;
+				CODE_SIGN_IDENTITY = "Developer ID Application";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = 8EDFC73F9M;
-				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
+				EXTRACT_APP_INTENTS_METADATA = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Cue/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Cue;
@@ -307,6 +321,25 @@
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		C0DEC0DE0000000000000102 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.4;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C0DEC0DE0000000000000103 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0DEC0DE0000000000000102 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCConfigurationList section */
 		CUE000000000000000000000A /* Build configuration list for PBXProject "Cue" */ = {

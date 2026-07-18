@@ -4,5 +4,9 @@
 <dict>
 	<key>NSCameraUseContinuityCameraDeviceType</key>
 	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/maxig/cue/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>CRB8jPFkENuIysnoprAznyFfkJ88j9rL0x+McNU5kBY=</string>
 </dict>
 </plist>

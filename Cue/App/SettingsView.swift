@@ -4,6 +4,7 @@ import SwiftUI
 /// with a back button — not a separate window.
 struct SettingsView: View {
     @EnvironmentObject private var app: AppState
+    @EnvironmentObject private var updater: UpdaterController
     var onBack: () -> Void = {}
 
     private var prefs: Preferences { app.preferences }
@@ -206,6 +207,11 @@ struct SettingsView: View {
                 NSWorkspace.shared.open(app.store.baseURL)
             }
             Divider().opacity(0.5)
+            RowButton("Check for Updates…", system: "arrow.triangle.2.circlepath") {
+                updater.checkForUpdates()
+            }
+            .disabled(!updater.canCheckForUpdates)
+            Divider().opacity(0.5)
             RowButton("Quit Cue", system: "power", destructive: true) {
                 NSApp.terminate(nil)
             }
@@ -216,7 +222,8 @@ struct SettingsView: View {
 
     private var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
-        return "Cue \(v)"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        return "Cue \(v) (\(build))"
     }
 
     // MARK: Bindings

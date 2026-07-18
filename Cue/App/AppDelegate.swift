@@ -8,10 +8,11 @@ import Combine
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
+    let updater = UpdaterController()
     private var statusController: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusController = StatusItemController(app: appState)
+        statusController = StatusItemController(app: appState, updater: updater)
     }
 }
 
@@ -20,12 +21,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 final class StatusItemController: NSObject, NSPopoverDelegate {
     private let app: AppState
+    private let updater: UpdaterController
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
     private var cancellables = Set<AnyCancellable>()
 
-    init(app: AppState) {
+    init(app: AppState, updater: UpdaterController) {
         self.app = app
+        self.updater = updater
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
@@ -33,7 +36,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.animates = true
         popover.delegate = self
         popover.contentViewController = NSHostingController(
-            rootView: RecorderPopoverView().environmentObject(app))
+            rootView: RecorderPopoverView()
+                .environmentObject(app)
+                .environmentObject(updater))
 
         if let button = statusItem.button {
             button.imagePosition = .imageLeading
@@ -105,6 +110,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         menu.addItem(item(app.isBusy ? "Stop Recording" : "Start Recording", #selector(toggleRecording)))
         menu.addItem(item("Open Library", #selector(openLibrary)))
         menu.addItem(.separator())
+        let updateItem = item("Check for Updates…", #selector(checkForUpdates))
+        updateItem.isEnabled = updater.canCheckForUpdates
+        menu.addItem(updateItem)
+        menu.addItem(.separator())
         menu.addItem(item("Quit Cue", #selector(quit), key: "q"))
 
         // Show under the status item, then clear so left-click still triggers the action.
@@ -123,6 +132,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     @objc private func toggleRecording() { app.toggleRecording() }
     @objc private func openLibrary() { app.openLibrary() }
+    @objc private func checkForUpdates() { updater.checkForUpdates() }
     @objc private func quit() { NSApp.terminate(nil) }
 
     // MARK: NSPopoverDelegate

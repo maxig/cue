@@ -106,6 +106,14 @@ xcodebuild -project Cue.xcodeproj -scheme Cue -configuration Debug \
 Cue launches as a **menubar agent** (no Dock icon — `LSUIElement`). Click the
 record glyph in the menu bar to open the recorder.
 
+### Updates and releases
+
+Cue checks for signed updates with Sparkle and downloads them from GitHub
+Releases. Pushes and pull requests run the Xcode CI build; pushing a version tag
+such as `v1.0.1` builds, signs, notarizes, and publishes the DMG and update feed.
+See [`docs/RELEASING.md`](docs/RELEASING.md) for the one-time secret setup and
+the in-place upgrade test.
+
 ### First-run permissions
 
 On first record macOS asks for **Screen Recording**, **Camera**, and **Microphone**

@@ -1,0 +1,245 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Sign, notarize, and publish
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+      CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
+      NOTARY_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+      NOTARY_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      NOTARY_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        run: sudo xcode-select --switch /Applications/Xcode.app
+
+      - name: Determine release version
+        id: version
+        shell: bash
+        run: |
+          RELEASE_TAG="${GITHUB_REF_NAME}"
+          VERSION="${RELEASE_TAG#v}"
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must use three numeric parts, for example 1.0.1." >&2
+            exit 64
+          fi
+
+          BUILD_NUMBER="$GITHUB_RUN_NUMBER"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release secrets
+        shell: bash
+        run: |
+          missing=0
+          for value in \
+            CERTIFICATE_BASE64 \
+            CERTIFICATE_PASSWORD \
+            NOTARY_API_KEY \
+            NOTARY_KEY_ID \
+            NOTARY_ISSUER_ID \
+            SPARKLE_PRIVATE_KEY
+          do
+            if [[ -z "${!value}" ]]; then
+              echo "::error::Missing GitHub Actions secret: $value"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Import Developer ID certificate
+        shell: bash
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/cue-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Resolve packages
+        run: |
+          xcodebuild \
+            -resolvePackageDependencies \
+            -project Cue.xcodeproj \
+            -scheme Cue \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages"
+
+      - name: Archive and export Developer ID app
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build }}
+        run: |
+          xcodebuild archive \
+            -project Cue.xcodeproj \
+            -scheme Cue \
+            -configuration Release \
+            -destination "generic/platform=macOS" \
+            -archivePath "$RUNNER_TEMP/Cue.xcarchive" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            -disableAutomaticPackageResolution \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM=8EDFC73F9M \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Cue.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist scripts/ExportOptions.plist
+
+      - name: Notarize the app
+        shell: bash
+        run: |
+          APP_PATH="$RUNNER_TEMP/export/Cue.app"
+          NOTARY_ZIP="$RUNNER_TEMP/Cue-notarization.zip"
+          NOTARY_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+
+          printf '%s' "$NOTARY_API_KEY" > "$NOTARY_KEY_PATH"
+          ditto -c -k --keepParent "$APP_PATH" "$NOTARY_ZIP"
+          xcrun notarytool submit "$NOTARY_ZIP" \
+            --key "$NOTARY_KEY_PATH" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Package DMG and Sparkle update
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          APP_PATH="$RUNNER_TEMP/export/Cue.app"
+          DIST_PATH="$RUNNER_TEMP/dist"
+          UPDATE_PATH="$RUNNER_TEMP/updates"
+          ZIP_NAME="Cue-${VERSION}.zip"
+          DMG_NAME="Cue-${VERSION}.dmg"
+          NOTES_PATH="$RUNNER_TEMP/release-notes.md"
+
+          mkdir -p "$DIST_PATH" "$UPDATE_PATH"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP_PATH" \
+            "$UPDATE_PATH/$ZIP_NAME"
+          scripts/create_dmg.sh "$APP_PATH" "$DIST_PATH/$DMG_NAME"
+
+          if ! gh api \
+            --method POST \
+            "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f "tag_name=$RELEASE_TAG" \
+            -f "target_commitish=$GITHUB_SHA" \
+            --jq .body > "$NOTES_PATH"
+          then
+            printf '# Cue %s\n\nBuilt from commit %s.\n' \
+              "$VERSION" "$GITHUB_SHA" > "$NOTES_PATH"
+          fi
+
+          cp "$NOTES_PATH" "$UPDATE_PATH/Cue-${VERSION}.md"
+
+          SPARKLE_BIN="$(find "$RUNNER_TEMP/SourcePackages/artifacts" \
+            -type d -path "*/Sparkle/bin" -print -quit)"
+          if [[ -z "$SPARKLE_BIN" ]]; then
+            echo "Sparkle release tools were not found." >&2
+            exit 69
+          fi
+
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" | \
+            "$SPARKLE_BIN/generate_appcast" \
+              --ed-key-file - \
+              --embed-release-notes \
+              --download-url-prefix \
+              "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/" \
+              -o "$UPDATE_PATH/appcast.xml" \
+              "$UPDATE_PATH"
+
+          mv "$UPDATE_PATH/$ZIP_NAME" "$DIST_PATH/$ZIP_NAME"
+          mv "$UPDATE_PATH/appcast.xml" "$DIST_PATH/appcast.xml"
+          echo "dist=$DIST_PATH" >> "$GITHUB_OUTPUT"
+          echo "notes=$NOTES_PATH" >> "$GITHUB_OUTPUT"
+          echo "dmg=$DIST_PATH/$DMG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize the DMG
+        env:
+          DMG_PATH: ${{ steps.package.outputs.dmg }}
+        run: |
+          xcrun notarytool submit "$DMG_PATH" \
+            --key "$RUNNER_TEMP/AuthKey.p8" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DIST_PATH: ${{ steps.package.outputs.dist }}
+          NOTES_PATH: ${{ steps.package.outputs.notes }}
+        shell: bash
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "$DIST_PATH/Cue-${VERSION}.dmg" \
+            "$DIST_PATH/Cue-${VERSION}.zip" \
+            "$DIST_PATH/appcast.xml" \
+            --verify-tag \
+            --title "Cue $VERSION" \
+            --notes-file "$NOTES_PATH"
+
+          echo "### Published Cue $VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "The DMG, Sparkle ZIP, and appcast are attached to $RELEASE_TAG." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary keychain
+        if: always()
+        run: |
+          if [[ -n "${KEYCHAIN_PATH:-}" && -f "$KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi
