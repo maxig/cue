@@ -10,10 +10,11 @@
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "db:schema": "wrangler d1 execute cue --remote --file=./schema.sql",
-    "db:schema:local": "wrangler d1 execute cue --local --file=./schema.sql"
+    "db:schema:local": "wrangler d1 execute cue --local --file=./schema.sql",
+    "db:migrate:metadata-sync": "wrangler d1 execute cue --remote --file=./migrations/0001_metadata_sync.sql"
   },
   "devDependencies": {
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.112.0"
   },
   "overrides": {
     "esbuild": "0.28.1"

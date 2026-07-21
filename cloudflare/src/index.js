@@ -73,12 +73,32 @@ function rowToVideo(row) {
     transcript: row.transcript || null,
     transcriptVtt: row.transcript_vtt || null,
     summary: row.summary || null,
+    titleUpdatedAt: row.title_updated_at || row.created_at || null,
+    transcriptUpdatedAt: row.transcript == null ? null : (row.transcript_updated_at || row.created_at || null),
+    summaryUpdatedAt: row.summary == null ? null : (row.summary_updated_at || row.created_at || null),
     chapters: parseStoredChapters(row.summary),
   };
 }
 
 function cleanTitle(value, maxLength = 100) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength).trim();
+}
+
+function normalizedTimestamp(value, fallback = null) {
+  const milliseconds = Date.parse(String(value || ""));
+  if (Number.isFinite(milliseconds)) return new Date(milliseconds).toISOString();
+  return fallback;
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
+function syncText(value, field, maxLength) {
+  if (value == null) return null;
+  const text = String(value);
+  if (text.length > maxLength) throw new Error(`${field} is too large`);
+  return text;
 }
 
 function generatedTitle(value, fallback) {
@@ -266,12 +286,16 @@ export default {
         const body = await request.json().catch(() => ({}));
         const { id, title, durationSeconds, objectKey, audioKey, bytes, width, height, captureMode, createdAt } = body || {};
         if (!id || !objectKey) return json({ error: "id and objectKey are required" }, { status: 400 });
+        const created = normalizedTimestamp(createdAt, new Date().toISOString());
+        const titleUpdatedAt = normalizedTimestamp(body?.titleUpdatedAt, created);
 
         await env.DB.prepare(
-          `INSERT INTO videos (id, title, duration_seconds, object_key, audio_key, bytes, width, height, capture_mode, created_at, disabled)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1)
+          `INSERT INTO videos (id, title, duration_seconds, object_key, audio_key, bytes, width, height, capture_mode, created_at, disabled, title_updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11)
            ON CONFLICT(id) DO UPDATE SET
-             title=excluded.title, duration_seconds=excluded.duration_seconds,
+             title=CASE WHEN excluded.title_updated_at >= COALESCE(videos.title_updated_at, videos.created_at, '') THEN excluded.title ELSE videos.title END,
+             title_updated_at=CASE WHEN excluded.title_updated_at >= COALESCE(videos.title_updated_at, videos.created_at, '') THEN excluded.title_updated_at ELSE videos.title_updated_at END,
+             duration_seconds=excluded.duration_seconds,
              object_key=excluded.object_key, audio_key=excluded.audio_key, bytes=excluded.bytes,
              width=excluded.width, height=excluded.height,
              capture_mode=excluded.capture_mode, created_at=excluded.created_at, disabled=1`
@@ -285,7 +309,8 @@ export default {
           Number(width) || 0,
           Number(height) || 0,
           captureMode || "screen",
-          createdAt || new Date().toISOString()
+          created,
+          titleUpdatedAt
         ).run();
 
         // Evict oldest recordings from R2 if this upload pushed usage over the
@@ -349,9 +374,53 @@ export default {
         const title = cleanTitle(body?.title);
         if (!title) return json({ error: "title is required" }, { status: 400 });
         const id = decodeURIComponent(titleMatch[1]);
-        const ok = await updateTitle(env, id, title);
-        if (!ok) return json({ error: "not found" }, { status: 404 });
-        return json({ id, title });
+        const result = await updateTitle(env, id, title, body?.titleUpdatedAt);
+        if (!result) return json({ error: "not found" }, { status: 404 });
+        return json({ id, ...result });
+      }
+
+      // Bidirectional native/web metadata sync. Each field has an independent
+      // clock, so a newer transcript never accidentally overwrites a newer name.
+      const syncMatch = pathname.match(/^\/api\/videos\/([^/]+)\/sync$/);
+      if (syncMatch && method === "POST") {
+        const denied = await ownerError(request, env);
+        if (denied) return denied;
+        const id = decodeURIComponent(syncMatch[1]);
+        // Pin the read/conditional writes/final read to one D1 session so the
+        // returned metadata is guaranteed to include the writes above it.
+        const db = env.DB.withSession("first-primary");
+        const existing = await db.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
+        if (!existing) return json({ error: "not found" }, { status: 404 });
+        const body = await request.json().catch(() => ({}));
+
+        if (hasOwn(body, "title")) {
+          const title = cleanTitle(body.title);
+          const updatedAt = normalizedTimestamp(body.titleUpdatedAt);
+          if (!title || !updatedAt) return json({ error: "title and titleUpdatedAt are required" }, { status: 400 });
+          await db.prepare(
+            "UPDATE videos SET title = ?, title_updated_at = ? WHERE id = ? AND COALESCE(title_updated_at, created_at, '') < ?"
+          ).bind(title, updatedAt, id, updatedAt).run();
+        }
+        if (hasOwn(body, "transcript")) {
+          const updatedAt = normalizedTimestamp(body.transcriptUpdatedAt);
+          if (!updatedAt) return json({ error: "transcriptUpdatedAt is required" }, { status: 400 });
+          const transcript = syncText(body.transcript, "transcript", 2_000_000);
+          const transcriptVtt = syncText(body.transcriptVtt, "transcriptVtt", 4_000_000);
+          await db.prepare(
+            "UPDATE videos SET transcript = ?, transcript_vtt = ?, transcript_updated_at = ? WHERE id = ? AND COALESCE(transcript_updated_at, '') < ?"
+          ).bind(transcript, transcriptVtt, updatedAt, id, updatedAt).run();
+        }
+        if (hasOwn(body, "summary")) {
+          const updatedAt = normalizedTimestamp(body.summaryUpdatedAt);
+          if (!updatedAt) return json({ error: "summaryUpdatedAt is required" }, { status: 400 });
+          const summary = syncText(body.summary, "summary", 250_000);
+          await db.prepare(
+            "UPDATE videos SET summary = ?, summary_updated_at = ? WHERE id = ? AND COALESCE(summary_updated_at, '') < ?"
+          ).bind(summary, updatedAt, id, updatedAt).run();
+        }
+
+        const settled = await db.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
+        return json(decorate(request, env, rowToVideo(settled)));
       }
 
       // Remove filler words from one recording's transcript (Workers AI-free) --
@@ -607,7 +676,13 @@ export default {
 
       return json({ error: "not found" }, { status: 404 });
     } catch (err) {
-      return json({ error: String((err && err.message) || err) }, { status: 500 });
+      console.error(JSON.stringify({
+        message: "unhandled request error",
+        method,
+        path: pathname,
+        error: String((err && err.message) || err),
+      }));
+      return json({ error: "internal server error" }, { status: 500 });
     }
   },
 };
@@ -708,9 +783,10 @@ async function runWhisper(env, key, lang) {
 async function transcribeVideo(env, row, { key, lang } = {}) {
   const objKey = key || row.audio_key || row.object_key;
   const { text, vtt } = await runWhisper(env, objKey, lang);
-  await env.DB.prepare("UPDATE videos SET transcript = ?, transcript_vtt = ? WHERE id = ?")
-    .bind(text, vtt, row.id).run();
-  return { text, vtt };
+  const updatedAt = new Date().toISOString();
+  await env.DB.prepare("UPDATE videos SET transcript = ?, transcript_vtt = ?, transcript_updated_at = ? WHERE id = ?")
+    .bind(text, vtt, updatedAt, row.id).run();
+  return { text, vtt, transcriptUpdatedAt: updatedAt };
 }
 
 // HTTP wrapper for POST /api/videos/:id/transcribe.
@@ -718,11 +794,11 @@ async function transcribeHTTP(id, url, env) {
   const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
   if (!row) return json({ error: "not found" }, { status: 404 });
   try {
-    const { text, vtt } = await transcribeVideo(env, row, {
+    const { text, vtt, transcriptUpdatedAt } = await transcribeVideo(env, row, {
       key: url.searchParams.get("key") || undefined,
       lang: url.searchParams.get("lang") || undefined,
     });
-    return json({ id, text, word_count: wordCount(text), vtt });
+    return json({ id, text, word_count: wordCount(text), vtt, transcriptUpdatedAt });
   } catch (e) {
     return json({ error: String((e && e.message) || e) }, { status: 500 });
   }
@@ -828,7 +904,7 @@ async function summarizeVideo(env, row) {
   if (!value) throw new Error("the summary model returned invalid structured data.");
 
   const suggestedTitle = generatedTitle(value.title, row.title);
-  const title = hasDefaultTitle(row.title) ? suggestedTitle : cleanTitle(row.title);
+  let title = hasDefaultTitle(row.title) ? suggestedTitle : cleanTitle(row.title);
   const chapters = cleanChapters(value.chapters, row.duration_seconds, suggestedTitle);
   const summary = formatInsightSummary({
     overview: value.overview,
@@ -836,9 +912,23 @@ async function summarizeVideo(env, row) {
     chapters,
   });
   if (!summary) throw new Error("the summary model returned no usable summary.");
-  await env.DB.prepare("UPDATE videos SET title = ?, summary = ? WHERE id = ?")
-    .bind(title, summary, row.id).run();
-  return { title, summary, chapters };
+  const summaryUpdatedAt = new Date().toISOString();
+  let titleUpdatedAt = row.title_updated_at || row.created_at || null;
+  const db = env.DB.withSession("first-primary");
+  await db.prepare("UPDATE videos SET summary = ?, summary_updated_at = ? WHERE id = ?")
+    .bind(summary, summaryUpdatedAt, row.id).run();
+  if (title !== row.title) {
+    // Do not let a long-running summary overwrite a title renamed while the AI
+    // request was in flight. Only replace the exact title version we started on.
+    const titleUpdate = await db.prepare(
+      "UPDATE videos SET title = ?, title_updated_at = ? WHERE id = ? AND COALESCE(title_updated_at, created_at, '') = ?"
+    ).bind(title, summaryUpdatedAt, row.id, titleUpdatedAt || "").run();
+    if (titleUpdate.meta.changes) titleUpdatedAt = summaryUpdatedAt;
+    const settled = await db.prepare("SELECT title, title_updated_at FROM videos WHERE id = ?").bind(row.id).first();
+    title = settled?.title || title;
+    titleUpdatedAt = settled?.title_updated_at || titleUpdatedAt;
+  }
+  return { title, summary, chapters, titleUpdatedAt, summaryUpdatedAt };
 }
 
 // HTTP wrapper for POST /api/videos/:id/summarize.
@@ -899,8 +989,9 @@ async function declutterVideo(env, row) {
   }
   const cleanText = removeFillers(transcript);
   const cleanVtt = cleanVttFillers(vtt);
-  await env.DB.prepare("UPDATE videos SET transcript = ?, transcript_vtt = ? WHERE id = ?")
-    .bind(cleanText, cleanVtt, row.id).run();
+  const updatedAt = new Date().toISOString();
+  await env.DB.prepare("UPDATE videos SET transcript = ?, transcript_vtt = ?, transcript_updated_at = ? WHERE id = ?")
+    .bind(cleanText, cleanVtt, updatedAt, row.id).run();
   return cleanText;
 }
 
@@ -918,10 +1009,20 @@ async function declutterHTTP(id, env) {
 
 // --- Owner actions / storage cap --------------------------------------------
 
-async function updateTitle(env, id, title) {
-  const res = await env.DB.prepare("UPDATE videos SET title = ? WHERE id = ?")
-    .bind(title, id).run();
-  return !!res.meta.changes;
+async function updateTitle(env, id, title, proposedUpdatedAt) {
+  const db = env.DB.withSession("first-primary");
+  const row = await db.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
+  if (!row) return null;
+  const updatedAt = normalizedTimestamp(proposedUpdatedAt, new Date().toISOString());
+  const res = await db.prepare(
+    "UPDATE videos SET title = ?, title_updated_at = ? WHERE id = ? AND COALESCE(title_updated_at, created_at, '') < ?"
+  ).bind(title, updatedAt, id, updatedAt).run();
+  if (res.meta.changes) return { title, titleUpdatedAt: updatedAt };
+  const settled = await db.prepare("SELECT title, title_updated_at, created_at FROM videos WHERE id = ?").bind(id).first();
+  return {
+    title: settled?.title || row.title,
+    titleUpdatedAt: settled?.title_updated_at || settled?.created_at || row.title_updated_at || row.created_at || null,
+  };
 }
 
 // Flip a share link off/on. Returns false if no recording matched the id.

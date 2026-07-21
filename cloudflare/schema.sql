@@ -15,7 +15,10 @@ CREATE TABLE IF NOT EXISTS videos (
   disabled         INTEGER NOT NULL DEFAULT 1,   -- share link OFF by default; owner enables it
   transcript       TEXT,             -- plain text, populated on demand by Whisper
   transcript_vtt   TEXT,             -- WebVTT with segment timing, optional
-  summary          TEXT              -- AI summary (Llama via Workers AI), on demand
+  summary          TEXT,             -- AI summary (Llama via Workers AI), on demand
+  title_updated_at TEXT,             -- independent clocks for native/web reconciliation
+  transcript_updated_at TEXT,
+  summary_updated_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos (created_at DESC);

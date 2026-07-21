@@ -107,6 +107,13 @@ struct Recording: Identifiable, Codable, Hashable {
     var transcriptVTT: String?
     var summary: String?
 
+    /// Per-field clocks used to reconcile offline native edits with changes
+    /// made in the web Library. Optional so recordings saved by older Cue
+    /// versions continue to decode; the first successful sync backfills them.
+    var titleUpdatedAt: Date?
+    var transcriptUpdatedAt: Date?
+    var summaryUpdatedAt: Date?
+
     /// Saved compose inputs, enabling post-record re-rendering (camera reposition
     /// + cinematic effects). Nil for entries recorded before this existed.
     var plan: CompositionPlan?
@@ -128,6 +135,9 @@ struct Recording: Identifiable, Codable, Hashable {
          transcript: String? = nil,
          transcriptVTT: String? = nil,
          summary: String? = nil,
+         titleUpdatedAt: Date? = nil,
+         transcriptUpdatedAt: Date? = nil,
+         summaryUpdatedAt: Date? = nil,
          plan: CompositionPlan? = nil) {
         self.id = id
         self.title = title
@@ -146,6 +156,9 @@ struct Recording: Identifiable, Codable, Hashable {
         self.transcript = transcript
         self.transcriptVTT = transcriptVTT
         self.summary = summary
+        self.titleUpdatedAt = titleUpdatedAt ?? createdAt
+        self.transcriptUpdatedAt = transcriptUpdatedAt
+        self.summaryUpdatedAt = summaryUpdatedAt
         self.plan = plan
     }
 

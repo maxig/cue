@@ -3,6 +3,7 @@ import Foundation
 struct CueTranscriptResult: Sendable {
     let text: String
     let vtt: String?
+    let updatedAt: Date?
 }
 
 struct CueSummaryResult: Sendable {
@@ -10,11 +11,28 @@ struct CueSummaryResult: Sendable {
     let summary: String
 }
 
-struct CueRemoteInsights: Sendable {
+struct CueRemoteRecording: Decodable, Sendable {
+    let id: String
     let title: String
     let transcript: String?
     let transcriptVTT: String?
     let summary: String?
+    let titleUpdatedAt: Date?
+    let transcriptUpdatedAt: Date?
+    let summaryUpdatedAt: Date?
+    let disabled: Bool?
+    let shareURL: URL?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, transcript, summary, titleUpdatedAt, transcriptUpdatedAt, summaryUpdatedAt, disabled, shareURL
+        case transcriptVTT = "transcriptVtt"
+    }
+}
+
+enum CueMetadataField: Hashable, Sendable {
+    case title
+    case transcript
+    case summary
 }
 
 /// The full self-hosted flow: PUT the file to MinIO, then register it with the
@@ -87,6 +105,9 @@ final class CueBackendUploadService: UploadService {
             "captureMode": recording.captureMode.rawValue,
             "createdAt": isoFormatter.string(from: recording.createdAt)
         ]
+        if let updatedAt = recording.titleUpdatedAt {
+            payload["titleUpdatedAt"] = Self.isoString(updatedAt)
+        }
         if let audioKey { payload["audioKey"] = audioKey }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
@@ -121,13 +142,17 @@ final class CueBackendUploadService: UploadService {
 
     /// Updates the server-side title so native and web libraries stay in sync.
     func updateTitle(_ title: String, recording: Recording) async throws -> String {
-        let data = try JSONSerialization.data(withJSONObject: ["title": title])
+        var payload: [String: Any] = ["title": title]
+        if let updatedAt = recording.titleUpdatedAt {
+            payload["titleUpdatedAt"] = Self.isoString(updatedAt)
+        }
+        let data = try JSONSerialization.data(withJSONObject: payload)
         let response = try await ownerRequest(
             path: "/api/videos/\(recording.id.uuidString.lowercased())/title",
             method: "POST",
             body: data
         )
-        struct Payload: Decodable { let title: String }
+        struct Payload: Decodable { let title: String; let titleUpdatedAt: Date? }
         return try decode(Payload.self, from: response).title
     }
 
@@ -137,9 +162,9 @@ final class CueBackendUploadService: UploadService {
             path: "/api/videos/\(recording.id.uuidString.lowercased())/transcribe",
             method: "POST"
         )
-        struct Payload: Decodable { let text: String; let vtt: String? }
+        struct Payload: Decodable { let text: String; let vtt: String?; let transcriptUpdatedAt: Date? }
         let payload: Payload = try decode(Payload.self, from: data)
-        return CueTranscriptResult(text: payload.text, vtt: payload.vtt)
+        return CueTranscriptResult(text: payload.text, vtt: payload.vtt, updatedAt: payload.transcriptUpdatedAt)
     }
 
     /// Generates a summary. The server transcribes first when necessary.
@@ -155,24 +180,49 @@ final class CueBackendUploadService: UploadService {
 
     /// Fetches any insights already generated on the server, allowing the app
     /// to sync results created in either the native Library or web dashboard.
-    func fetchInsights(recording: Recording) async throws -> CueRemoteInsights {
+    func fetchInsights(recording: Recording) async throws -> CueRemoteRecording {
         let data = try await ownerRequest(
             path: "/api/videos/\(recording.id.uuidString.lowercased())",
             method: "GET"
         )
-        struct Payload: Decodable {
-            let title: String
-            let transcript: String?
-            let transcriptVtt: String?
-            let summary: String?
+        return try decode(CueRemoteRecording.self, from: data)
+    }
+
+    /// Fetches the owner Library in one request so the native app can reconcile
+    /// every cloud-backed recording without polling each item independently.
+    func fetchLibrary() async throws -> [CueRemoteRecording] {
+        let data = try await ownerRequest(path: "/api/videos", method: "GET")
+        struct Payload: Decodable { let videos: [CueRemoteRecording] }
+        return try decode(Payload.self, from: data).videos
+    }
+
+    /// Pushes only fields whose local timestamp is newer. The server repeats the
+    /// timestamp comparison atomically, then returns the settled remote values.
+    func syncMetadata(
+        recording: Recording,
+        fields: Set<CueMetadataField>
+    ) async throws -> CueRemoteRecording {
+        var payload: [String: Any] = [:]
+        if fields.contains(.title), let updatedAt = recording.titleUpdatedAt {
+            payload["title"] = recording.title
+            payload["titleUpdatedAt"] = Self.isoString(updatedAt)
         }
-        let payload: Payload = try decode(Payload.self, from: data)
-        return CueRemoteInsights(
-            title: payload.title,
-            transcript: payload.transcript,
-            transcriptVTT: payload.transcriptVtt,
-            summary: payload.summary
+        if fields.contains(.transcript), let updatedAt = recording.transcriptUpdatedAt {
+            payload["transcript"] = recording.transcript ?? NSNull()
+            payload["transcriptVtt"] = recording.transcriptVTT ?? NSNull()
+            payload["transcriptUpdatedAt"] = Self.isoString(updatedAt)
+        }
+        if fields.contains(.summary), let updatedAt = recording.summaryUpdatedAt {
+            payload["summary"] = recording.summary ?? NSNull()
+            payload["summaryUpdatedAt"] = Self.isoString(updatedAt)
+        }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let data = try await ownerRequest(
+            path: "/api/videos/\(recording.id.uuidString.lowercased())/sync",
+            method: "POST",
+            body: body
         )
+        return try decode(CueRemoteRecording.self, from: data)
     }
 
     @discardableResult
@@ -200,10 +250,31 @@ final class CueBackendUploadService: UploadService {
 
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         do {
-            return try JSONDecoder().decode(type, from: data)
+            return try Self.makeBackendDecoder().decode(type, from: data)
         } catch {
             throw UploadError.invalidResponse(error.localizedDescription)
         }
+    }
+
+    private static func makeBackendDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractional.date(from: value) { return date }
+            let standard = ISO8601DateFormatter()
+            if let date = standard.date(from: value) { return date }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid ISO-8601 date")
+        }
+        return decoder
+    }
+
+    private static func isoString(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 
     private func fileSize(_ url: URL) -> Int {

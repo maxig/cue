@@ -60,6 +60,11 @@ final class AppState: ObservableObject {
     /// Per-recording AI work shown inline in the Library detail pane.
     @Published private(set) var insightGeneration: [UUID: InsightGenerationPhase] = [:]
 
+    /// Whole-library metadata reconciliation. Cue performs this on launch and
+    /// periodically thereafter so web edits appear without a manual refresh.
+    @Published private(set) var isLibrarySyncing = false
+    @Published private(set) var lastLibrarySyncAt: Date?
+
     // In-recording controls (mic mute / camera off / pause)
     @Published private(set) var isPaused = false
     @Published private(set) var micActive = true
@@ -95,6 +100,15 @@ final class AppState: ObservableObject {
                 .sink { [weak self] _ in self?.objectWillChange.send() }
                 .store(in: &cancellables)
         }
+
+        Timer.publish(every: 30, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                Task { @MainActor in await self?.syncLibrary() }
+            }
+            .store(in: &cancellables)
+
+        Task { @MainActor [weak self] in await self?.syncLibrary() }
     }
 
     // MARK: Derived state
@@ -546,6 +560,7 @@ final class AppState: ObservableObject {
             var working = latestRecording(recording.id) ?? prepared
             working.transcript = result.text
             working.transcriptVTT = result.vtt
+            working.transcriptUpdatedAt = result.updatedAt ?? .now
             store.upsert(working)
         } catch {
             insightGeneration[recording.id] = nil
@@ -568,10 +583,12 @@ final class AppState: ObservableObject {
             let remote = try? await backend.fetchInsights(recording: prepared)
 
             var working = latestRecording(recording.id) ?? prepared
-            working.title = remote?.title ?? insight.title
-            working.summary = remote?.summary ?? insight.summary
-            if let transcript = remote?.transcript { working.transcript = transcript }
-            if let vtt = remote?.transcriptVTT { working.transcriptVTT = vtt }
+            if let remote {
+                working = applyRemote(remote, to: working)
+            } else {
+                working.title = insight.title
+                working.summary = insight.summary
+            }
             store.upsert(working)
         } catch {
             insightGeneration[recording.id] = nil
@@ -591,12 +608,8 @@ final class AppState: ObservableObject {
             defer { insightGeneration[recording.id] = nil }
 
             let remote = try await backend.fetchInsights(recording: recording)
-            var working = latestRecording(recording.id) ?? recording
-            working.title = remote.title
-            working.transcript = remote.transcript
-            working.transcriptVTT = remote.transcriptVTT
-            working.summary = remote.summary
-            store.upsert(working)
+            let local = latestRecording(recording.id) ?? recording
+            store.upsert(try await reconcile(local, with: remote, using: backend))
         } catch {
             insightGeneration[recording.id] = nil
             errorMessage = "Couldn’t refresh insights: \(error.localizedDescription)"
@@ -621,6 +634,117 @@ final class AppState: ObservableObject {
         store.recordings.first { $0.id == id }
     }
 
+    /// Reconciles every native/cloud pair. Newer per-field values are pushed;
+    /// newer web values are pulled. Cloud deletions only detach the remote copy
+    /// and never delete the user's local media.
+    func syncLibrary(showErrors: Bool = false) async {
+        guard !isLibrarySyncing,
+              uploadSettings.backend == .cueServer,
+              !uploadSettings.backendBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !uploadSettings.ownerToken.isEmpty,
+              let backend = uploadSettings.cueBackendService() else { return }
+
+        isLibrarySyncing = true
+        defer { isLibrarySyncing = false }
+        do {
+            let remotes = try await backend.fetchLibrary()
+            let remoteByID = Dictionary(uniqueKeysWithValues: remotes.compactMap { remote in
+                UUID(uuidString: remote.id).map { ($0, remote) }
+            })
+            let localIDs = store.recordings.map(\.id)
+
+            for id in localIDs {
+                guard let local = latestRecording(id) else { continue }
+                if let remote = remoteByID[id] {
+                    let settled = try await reconcile(local, with: remote, using: backend)
+                    if settled != local { store.upsert(settled) }
+                } else if local.uploadBackend == .cueServer {
+                    var detached = local
+                    detached.share = .local
+                    detached.uploadBackend = nil
+                    store.upsert(detached)
+                }
+            }
+            lastLibrarySyncAt = .now
+        } catch {
+            if showErrors {
+                errorMessage = "Library sync failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func reconcile(
+        _ local: Recording,
+        with fetchedRemote: CueRemoteRecording,
+        using backend: CueBackendUploadService
+    ) async throws -> Recording {
+        var remote = fetchedRemote
+        var fields: Set<CueMetadataField> = []
+        if local.title != remote.title,
+           isNewer(local.titleUpdatedAt, than: remote.titleUpdatedAt) {
+            fields.insert(.title)
+        }
+        if (local.transcript != remote.transcript || local.transcriptVTT != remote.transcriptVTT),
+           isNewer(local.transcriptUpdatedAt, than: remote.transcriptUpdatedAt) {
+            fields.insert(.transcript)
+        }
+        if local.summary != remote.summary,
+           isNewer(local.summaryUpdatedAt, than: remote.summaryUpdatedAt) {
+            fields.insert(.summary)
+        }
+        if !fields.isEmpty {
+            remote = try await backend.syncMetadata(recording: local, fields: fields)
+        }
+        return applyRemote(remote, to: local)
+    }
+
+    private func applyRemote(_ remote: CueRemoteRecording, to local: Recording) -> Recording {
+        var working = local
+
+        if local.title == remote.title {
+            working.titleUpdatedAt = newest(local.titleUpdatedAt, remote.titleUpdatedAt)
+        } else {
+            working.title = remote.title
+            working.titleUpdatedAt = remote.titleUpdatedAt
+        }
+
+        if local.transcript == remote.transcript && local.transcriptVTT == remote.transcriptVTT {
+            working.transcriptUpdatedAt = newest(local.transcriptUpdatedAt, remote.transcriptUpdatedAt)
+        } else {
+            working.transcript = remote.transcript
+            working.transcriptVTT = remote.transcriptVTT
+            working.transcriptUpdatedAt = remote.transcriptUpdatedAt
+        }
+
+        if local.summary == remote.summary {
+            working.summaryUpdatedAt = newest(local.summaryUpdatedAt, remote.summaryUpdatedAt)
+        } else {
+            working.summary = remote.summary
+            working.summaryUpdatedAt = remote.summaryUpdatedAt
+        }
+
+        if let url = remote.shareURL {
+            working.share = (remote.disabled ?? false) ? .disabled(url: url) : .shared(url: url)
+        }
+        working.uploadBackend = .cueServer
+        return working
+    }
+
+    private func isNewer(_ local: Date?, than remote: Date?) -> Bool {
+        guard let local else { return false }
+        guard let remote else { return true }
+        return local > remote
+    }
+
+    private func newest(_ first: Date?, _ second: Date?) -> Date? {
+        switch (first, second) {
+        case let (a?, b?): return max(a, b)
+        case let (a?, nil): return a
+        case let (nil, b?): return b
+        case (nil, nil): return nil
+        }
+    }
+
     /// Renames a recording locally and mirrors the change to the Cue server when
     /// this recording has a registered cloud copy. Local edits remain saved if a
     /// temporarily unavailable server cannot be updated.
@@ -634,6 +758,7 @@ final class AppState: ObservableObject {
 
         var working = latestRecording(recording.id) ?? recording
         working.title = title
+        working.titleUpdatedAt = .now
         store.upsert(working)
 
         guard working.uploadBackend == .cueServer, working.shareURL != nil else { return }
@@ -846,6 +971,7 @@ final class AppState: ObservableObject {
         }
         NSApp.activate(ignoringOtherApps: true)
         libraryWindow?.makeKeyAndOrderFront(nil)
+        Task { await syncLibrary() }
     }
 
     func delete(_ recording: Recording) {

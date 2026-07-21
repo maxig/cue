@@ -32,11 +32,15 @@ const sampleRow = {
   transcript: "Um, hello, you know, world.",
   transcript_vtt: "WEBVTT\n\n00:01.250 --> 00:03.000\nUm\n\n00:03.000 --> 00:05.000\nHello world.\n",
   summary: "A friendly demo.",
+  title_updated_at: "2026-07-18T12:00:00.000Z",
+  transcript_updated_at: "2026-07-18T12:01:00.000Z",
+  summary_updated_at: "2026-07-18T12:02:00.000Z",
 };
 
 function mockEnvironment(row = sampleRow) {
   const writes = [];
   const DB = {
+    withSession() { return DB; },
     prepare(sql) {
       return {
         bind(...values) {
@@ -167,6 +171,31 @@ test("owner can rename a video through the API and web management form", async (
   }), env);
   assert.equal(formResponse.status, 303);
   assert.ok(writes.some(({ sql, values }) => sql.includes("UPDATE videos SET title") && values[0] === "Launch review"));
+});
+
+test("native metadata sync uses independent conditional clocks and returns settled fields", async () => {
+  const { env, writes } = mockEnvironment();
+  const response = await worker.fetch(ownerRequest("https://cue.test/api/videos/video-1/sync", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      title: "Synced native title",
+      titleUpdatedAt: "2026-07-21T10:00:00.000Z",
+      transcript: "A newer local transcript.",
+      transcriptVtt: null,
+      transcriptUpdatedAt: "2026-07-21T10:01:00.000Z",
+      summary: "A newer local summary.",
+      summaryUpdatedAt: "2026-07-21T10:02:00.000Z",
+    }),
+  }), env);
+
+  assert.equal(response.status, 200);
+  assert.ok(writes.some(({ sql, values }) =>
+    sql.includes("COALESCE(title_updated_at") && values[0] === "Synced native title"));
+  assert.ok(writes.some(({ sql, values }) =>
+    sql.includes("COALESCE(transcript_updated_at") && values[0] === "A newer local transcript."));
+  assert.ok(writes.some(({ sql, values }) =>
+    sql.includes("COALESCE(summary_updated_at") && values[0] === "A newer local summary."));
 });
 
 test("public player renders stored smart chapters as seek controls", async () => {

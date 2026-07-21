@@ -1,6 +1,7 @@
 name = "cue"
 main = "src/index.js"
-compatibility_date = "2026-06-01"
+compatibility_date = "2026-07-21"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 routes = [
@@ -27,6 +28,7 @@ binding = "AI"               # env.AI
 
 [observability]
 enabled = true
+head_sampling_rate = 1
 
 # --- Owner auth (required) ----------------------------------------------------
 # The entire /api surface (register, list, fetch, transcribe, delete,

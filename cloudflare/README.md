@@ -124,6 +124,13 @@ npm run db:schema:local    # the local `wrangler dev` simulator
 > **Adding reactions & comments** ([below](#reactions--comments))? They live in new
 > tables, so just re-run the schema — it's idempotent (`CREATE TABLE IF NOT EXISTS`
 > leaves `videos` untouched): `npm run db:schema` (remote) / `npm run db:schema:local`.
+>
+> **Enabling native/web Library sync on an existing database?** Apply the
+> one-time metadata-clock migration before deploying the matching Worker:
+> ```sh
+> npm run db:migrate:metadata-sync
+> ```
+> Fresh databases created from `schema.sql` already include these columns.
 
 ---
 
@@ -321,7 +328,10 @@ From the app's Library (right-click a row, or the detail pane) — or from the
   (HTTP 410) without deleting anything; reversible anytime.
 - **Remove from Cloud** — deletes the R2 objects + metadata, keeps the local file.
 - **Rename** — edits the title from either the macOS Library or private web view;
-  both update the same server metadata.
+  both update the same server metadata. The native app also reconciles titles,
+  transcripts, summaries, and link state on launch, whenever the Library opens,
+  and every 30 seconds while it runs. Newer per-field edits win, including edits
+  made while the Mac was offline.
 - **Delete** — removes it everywhere (local + cloud).
 
 > Disable gates the Worker. If you serve media through an R2 **custom domain**, its
@@ -451,6 +461,7 @@ archive.
 | `DELETE` | `/api/videos/:id` | **owner** | delete R2 objects + metadata |
 | `POST` | `/api/videos/:id/disable` · `/enable` | **owner** | turn the share link off / on |
 | `POST` | `/api/videos/:id/title` | **owner** | rename a recording (`{ title }`) |
+| `POST` | `/api/videos/:id/sync` | **owner** | conditionally merge newer title/transcript/summary fields from the native Library |
 | `POST` | `/api/videos/:id/transcribe` · `/summarize` | **owner** | transcribe / summarize (Workers AI) |
 | `POST` | `/api/videos/:id/declutter` | **owner** | strip filler words (um/uh…) from the transcript |
 | `GET` · `POST` | `/app` | **owner / Access** | private dashboard (list + Enable/Disable/Delete) |

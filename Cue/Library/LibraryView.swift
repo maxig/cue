@@ -45,7 +45,23 @@ struct LibraryView: View {
                         .contextMenu { rowMenu(recording) }
                 }
             } header: {
-                Text("Recordings").font(.cueSectionLabel)
+                HStack {
+                    Text("Recordings").font(.cueSectionLabel)
+                    Spacer()
+                    if app.isLibrarySyncing {
+                        ProgressView()
+                            .controlSize(.small)
+                            .help("Syncing with Cue server")
+                    } else if app.uploadSettings.backend == .cueServer {
+                        Button {
+                            Task { await app.syncLibrary(showErrors: true) }
+                        } label: {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                        }
+                        .buttonStyle(.plain)
+                        .help("Sync local and web Libraries")
+                    }
+                }
             }
         }
         .listStyle(.sidebar)
