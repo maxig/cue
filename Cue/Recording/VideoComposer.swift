@@ -3,6 +3,7 @@ import AVFoundation
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import CoreGraphics
+import AppKit
 
 // MARK: - Custom video compositor (background + padded screen + camera PiP)
 
@@ -31,6 +32,9 @@ final class CueVideoCompositorInstruction: NSObject, AVVideoCompositionInstructi
     let mirrorOverlay: Bool
     let cameraBackground: CameraBackground
     let cameraHiddenRanges: [ClosedRange<Double>]
+    let mouseActivity: MouseActivity?
+    let cinematicEffects: Bool
+    let drawCustomCursor: Bool
 
     init(timeRange: CMTimeRange,
          screenTrackID: CMPersistentTrackID,
@@ -43,7 +47,10 @@ final class CueVideoCompositorInstruction: NSObject, AVVideoCompositionInstructi
          mirrorBase: Bool,
          mirrorOverlay: Bool,
          cameraBackground: CameraBackground = .none,
-         cameraHiddenRanges: [ClosedRange<Double>] = []) {
+         cameraHiddenRanges: [ClosedRange<Double>] = [],
+         mouseActivity: MouseActivity? = nil,
+         cinematicEffects: Bool = false,
+         drawCustomCursor: Bool = false) {
         self.timeRange = timeRange
         self.screenTrackID = screenTrackID
         self.cameraTrackID = cameraTrackID
@@ -56,6 +63,9 @@ final class CueVideoCompositorInstruction: NSObject, AVVideoCompositionInstructi
         self.mirrorOverlay = mirrorOverlay
         self.cameraBackground = cameraBackground
         self.cameraHiddenRanges = cameraHiddenRanges
+        self.mouseActivity = mouseActivity
+        self.cinematicEffects = cinematicEffects
+        self.drawCustomCursor = drawCustomCursor
         var ids = [NSNumber(value: screenTrackID)]
         if cameraTrackID != kCMPersistentTrackID_Invalid { ids.append(NSNumber(value: cameraTrackID)) }
         self.requiredSourceTrackIDs = ids
@@ -69,6 +79,7 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
     private let renderQueue = DispatchQueue(label: "com.max.Cue.Compositor")
     private var maskCache: [String: CIImage] = [:]
     private var backgroundCache: [String: CIImage] = [:]
+    private lazy var pointerImage = Self.makePointerImage()
 
     /// Camera background compositing. Frames are processed serially on
     /// `renderQueue`, so a single matte (reused Vision request) is safe.
@@ -94,10 +105,18 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
                 }
                 let size = request.renderContext.size
                 var result = self.background(instruction.background, size: size)
+                let nowSeconds = request.compositionTime.seconds
 
                 if let screenBuffer = request.sourceFrame(byTrackID: instruction.screenTrackID) {
                     var image = CIImage(cvPixelBuffer: screenBuffer)
                     if instruction.mirrorBase { image = image.oriented(.upMirrored) }
+                    if (instruction.cinematicEffects || instruction.drawCustomCursor),
+                       let activity = instruction.mouseActivity {
+                        image = self.applyCinematicEffects(to: image, activity: activity,
+                                                          at: nowSeconds,
+                                                          cinematicEffects: instruction.cinematicEffects,
+                                                          drawCustomCursor: instruction.drawCustomCursor)
+                    }
                     if instruction.background.isVisible {
                         result = self.composeScreenWithPadding(image, padding: instruction.padding,
                                                                renderSize: size, over: result)
@@ -106,7 +125,6 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
                     }
                 }
 
-                let nowSeconds = request.compositionTime.seconds
                 let cameraHidden = instruction.cameraHiddenRanges.contains { $0.contains(nowSeconds) }
                 if instruction.cameraTrackID != kCMPersistentTrackID_Invalid, !cameraHidden,
                    let cameraBuffer = request.sourceFrame(byTrackID: instruction.cameraTrackID) {
@@ -130,11 +148,20 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
     // MARK: Background
 
     private func background(_ background: CanvasBackground, size: CGSize) -> CIImage {
-        guard let stops = background.gradient else {
-            return CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: size))
-        }
         let key = "\(background.rawValue)-\(Int(size.width))x\(Int(size.height))"
         if let cached = backgroundCache[key] { return cached }
+
+        if let assetName = background.assetName,
+           let artwork = artwork(named: assetName, size: size) {
+            backgroundCache[key] = artwork
+            return artwork
+        }
+
+        // If an artwork asset is unexpectedly unavailable, keep the recording
+        // polished with the standard midnight gradient instead of rendering black.
+        guard let stops = background.gradient ?? (background.isVisible ? CanvasBackground.midnight.gradient : nil) else {
+            return CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: size))
+        }
         let filter = CIFilter.linearGradient()
         filter.point0 = CGPoint(x: size.width / 2, y: 0)
         filter.color0 = CIColor(red: stops.bottom.0, green: stops.bottom.1, blue: stops.bottom.2)
@@ -144,6 +171,15 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
             .cropped(to: CGRect(origin: .zero, size: size))
         backgroundCache[key] = image
         return image
+    }
+
+    private func artwork(named name: String, size: CGSize) -> CIImage? {
+        guard let image = NSImage(named: name) else { return nil }
+        var proposedRect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) else {
+            return nil
+        }
+        return CIImage(cgImage: cgImage).scaledToFill(size)
     }
 
     // MARK: Padded screen (rounded + shadow)
@@ -194,6 +230,156 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
         .cropped(to: CGRect(origin: .zero, size: renderSize))
 
         return rounded.composited(over: shadowShape.composited(over: background))
+    }
+
+    // MARK: Cinematic pointer effects
+
+    private func applyCinematicEffects(to source: CIImage, activity: MouseActivity,
+                                       at seconds: Double, cinematicEffects: Bool,
+                                       drawCustomCursor: Bool) -> CIImage {
+        var image = source
+        if cinematicEffects,
+           let click = activity.clicks.last(where: { seconds >= $0.t && seconds - $0.t <= 0.72 }) {
+            image = addClickRipple(to: image, click: click, age: seconds - click.t)
+        }
+        if drawCustomCursor, let position = smoothedPosition(in: activity.moves, at: seconds) {
+            image = addPointer(to: image, position: position)
+        }
+        if cinematicEffects,
+           let click = activity.clicks.last(where: { seconds >= $0.t && seconds - $0.t <= 2.2 }) {
+            image = autoZoom(image, toward: click, age: seconds - click.t)
+        }
+        return image
+    }
+
+    private func autoZoom(_ image: CIImage, toward click: MouseSample, age: Double) -> CIImage {
+        let progress: CGFloat
+        if age < 0.34 {
+            progress = smoothStep(CGFloat(age / 0.34))
+        } else if age < 1.45 {
+            progress = 1
+        } else {
+            progress = 1 - smoothStep(CGFloat((age - 1.45) / 0.75))
+        }
+        guard progress > 0.001 else { return image }
+
+        let zoom = 1 + 0.30 * progress
+        let extent = image.extent
+        let cropWidth = extent.width / zoom
+        let cropHeight = extent.height / zoom
+        // Ease the focal point from frame center toward the click so zoom entry
+        // never snaps, then clamp the crop to keep every output pixel valid.
+        let clickX = extent.minX + extent.width * CGFloat(min(max(click.x, 0), 1))
+        let clickY = extent.minY + extent.height * (1 - CGFloat(min(max(click.y, 0), 1)))
+        let focusX = extent.midX + (clickX - extent.midX) * progress
+        let focusY = extent.midY + (clickY - extent.midY) * progress
+        let minX = min(max(focusX - cropWidth / 2, extent.minX), extent.maxX - cropWidth)
+        let minY = min(max(focusY - cropHeight / 2, extent.minY), extent.maxY - cropHeight)
+        let crop = CGRect(x: minX, y: minY, width: cropWidth, height: cropHeight)
+        return image.cropped(to: crop)
+            .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
+            .transformed(by: CGAffineTransform(scaleX: zoom, y: zoom))
+            .cropped(to: CGRect(origin: .zero, size: extent.size))
+    }
+
+    private func addClickRipple(to image: CIImage, click: MouseSample, age: Double) -> CIImage {
+        let extent = image.extent
+        let center = CGPoint(
+            x: extent.minX + extent.width * CGFloat(min(max(click.x, 0), 1)),
+            y: extent.minY + extent.height * (1 - CGFloat(min(max(click.y, 0), 1)))
+        )
+        let p = CGFloat(min(max(age / 0.72, 0), 1))
+        let radius = extent.width * (0.010 + 0.026 * smoothStep(p))
+        let thickness = max(3, extent.width * 0.0025)
+        let outer = radialDisk(center: center, radius: radius + thickness, extent: extent)
+        let inner = radialDisk(center: center, radius: max(0, radius - thickness), extent: extent)
+        let ring = outer.applyingFilter("CISourceOutCompositing", parameters: [
+            kCIInputBackgroundImageKey: inner
+        ]).cropped(to: extent)
+        let color = CIImage(color: CIColor(red: 0.04, green: 0.52, blue: 1,
+                                           alpha: Double(0.9 * (1 - p))))
+            .cropped(to: extent)
+        return color.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: image,
+            kCIInputMaskImageKey: ring
+        ]).cropped(to: extent)
+    }
+
+    private func radialDisk(center: CGPoint, radius: CGFloat, extent: CGRect) -> CIImage {
+        let filter = CIFilter.radialGradient()
+        filter.center = center
+        filter.radius0 = Float(max(0, radius - 1.5))
+        filter.radius1 = max(filter.radius0 + 1, Float(radius))
+        filter.color0 = CIColor.white
+        filter.color1 = CIColor.clear
+        return (filter.outputImage ?? CIImage.empty()).cropped(to: extent)
+    }
+
+    private func smoothedPosition(in samples: [MouseSample], at seconds: Double) -> MouseSample? {
+        guard let first = samples.first else { return nil }
+        guard samples.count > 1, seconds > first.t else { return first }
+        guard let last = samples.last else { return first }
+        guard seconds < last.t else { return last }
+
+        var low = 0
+        var high = samples.count - 1
+        while low + 1 < high {
+            let mid = (low + high) / 2
+            if samples[mid].t <= seconds { low = mid } else { high = mid }
+        }
+        let before = samples[low]
+        let after = samples[high]
+        let span = max(0.0001, after.t - before.t)
+        let p = Double(smoothStep(CGFloat((seconds - before.t) / span)))
+        return MouseSample(t: seconds,
+                           x: before.x + (after.x - before.x) * p,
+                           y: before.y + (after.y - before.y) * p)
+    }
+
+    private func addPointer(to image: CIImage, position: MouseSample) -> CIImage {
+        let extent = image.extent
+        let targetSize = max(28, extent.width * 0.013)
+        let scale = targetSize / max(1, pointerImage.extent.width)
+        let tipX = extent.minX + extent.width * CGFloat(min(max(position.x, 0), 1))
+        let tipY = extent.minY + extent.height * (1 - CGFloat(min(max(position.y, 0), 1)))
+        let pointer = pointerImage
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .transformed(by: CGAffineTransform(translationX: tipX - 4 * scale,
+                                               y: tipY - 60 * scale))
+        return pointer.composited(over: image).cropped(to: extent)
+    }
+
+    private func smoothStep(_ value: CGFloat) -> CGFloat {
+        let t = min(max(value, 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+
+    private static func makePointerImage() -> CIImage {
+        let width = 64
+        let height = 64
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(data: nil, width: width, height: height,
+                                      bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: colorSpace,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return CIImage.empty()
+        }
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: 4, y: 60))
+        path.addLine(to: CGPoint(x: 4, y: 10))
+        path.addLine(to: CGPoint(x: 18, y: 23))
+        path.addLine(to: CGPoint(x: 27, y: 4))
+        path.addLine(to: CGPoint(x: 38, y: 9))
+        path.addLine(to: CGPoint(x: 29, y: 28))
+        path.addLine(to: CGPoint(x: 48, y: 28))
+        path.closeSubpath()
+        context.addPath(path)
+        context.setLineJoin(.round)
+        context.setLineWidth(4)
+        context.setStrokeColor(CGColor(gray: 0.05, alpha: 0.95))
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.drawPath(using: .fillStroke)
+        return context.makeImage().map(CIImage.init(cgImage:)) ?? CIImage.empty()
     }
 
     // MARK: Camera bubble
@@ -322,6 +508,9 @@ enum VideoComposer {
                         cameraHiddenRanges: [ClosedRange<Double>] = [],
                         screenPauseSpans: [ClosedRange<Double>] = [],
                         cameraPauseSpans: [ClosedRange<Double>] = [],
+                        mouseActivity: MouseActivity? = nil,
+                        cinematicEffects: Bool = false,
+                        drawCustomCursor: Bool = false,
                         outputURL: URL) async throws -> Output {
 
         guard let baseVideoURL = screenURL ?? cameraURL else {
@@ -439,7 +628,10 @@ enum VideoComposer {
                 mirrorBase: mirrored && cameraIsBase,
                 mirrorOverlay: mirrored && !cameraIsBase,
                 cameraBackground: cameraBackground,
-                cameraHiddenRanges: cameraHiddenRanges)
+                cameraHiddenRanges: cameraHiddenRanges,
+                mouseActivity: cameraIsBase ? nil : mouseActivity,
+                cinematicEffects: !cameraIsBase && cinematicEffects,
+                drawCustomCursor: !cameraIsBase && drawCustomCursor)
         ]
 
         // Export

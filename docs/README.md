@@ -3,10 +3,10 @@
 A self-hostable, native macOS Loom alternative — a Liquid Glass menubar recorder
 that captures your screen + camera + mic and shares the result.
 
-This repo currently contains **Phase 1: the runnable menubar app** (native
-SwiftUI + ScreenCaptureKit + AVFoundation). Sharing is wired through a pluggable
-`UploadService`; the default is a local stub, with a ready-to-configure
-self-hosted **MinIO** backend.
+This repo contains the completed **Phase 1 and Phase 2** recorder: native capture,
+self-hosted sharing, Cloudflare AI insights, and reversible Studio composition.
+Sharing remains wired through a pluggable `UploadService` with local, MinIO, and
+full Cue-server backends.
 
 ## Requirements
 
@@ -60,11 +60,10 @@ Cue/
 Option A from the design docs: **separate tracks**. The screen (video + one
 audio track) is written to `screen.mov` via `AVAssetWriter`; the camera is
 written to its own `camera.mov`. This makes device switching resilient and lets
-a future editor reposition the webcam bubble.
+the Studio editor reposition the webcam bubble and re-render cinematic effects.
 
-**Audio (MVP):** one audio track is written — the microphone if enabled
-(Loom-style narration), otherwise system audio. Mixing both / writing separate
-audio tracks for post-composition is the documented Phase-2 step.
+System audio and microphone are retained on separate tracks and mixed into the
+final timeline during post-composition.
 
 ## Camera bubble & compositing
 
@@ -100,14 +99,14 @@ Then in *Settings ▸ Sharing* choose a backend:
 - **Cue server** *(default once configured)* — uploads `final.mp4` to MinIO,
   registers it with the backend, and copies a real player link:
   `http://localhost:8787/v/<id>`. The page streams the video from MinIO and
-  shows title/meta plus Phase-2 placeholders (summary / transcript / reactions).
+  shows editable title/meta. The Cloudflare backend adds AI summaries, smart
+  chapters, timestamped transcripts, reactions, and comments.
 
 The secret key is kept in the macOS Keychain. For sharing beyond this Mac, point
 the backend + MinIO at a public host (or a Cloudflare tunnel) and set the
 backend/public base URLs accordingly.
 
-## Not yet built (per PRODUCT.md roadmap)
+## Next on the roadmap
 
-AI transcription / summary / filler-word removal, Studio mode (canvas
-backgrounds, auto-zoom, cursor smoothing), true real-time compositing, team
-workspaces. The app is structured so these slot in without rework.
+Team workspaces, shared folders, RBAC/SSO, and deeper AI-assisted editing beyond
+the current click-aware Studio effects. See `PRODUCT.md` for the current phases.

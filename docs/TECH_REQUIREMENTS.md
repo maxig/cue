@@ -53,8 +53,10 @@ Record separate tracks to ensure reliability and simplify device switching:
 - Metadata track (for layout/switch events)
 *Composition happens post-recording or on the player side.*
 
-### Phase 2: Real-time Compositing (Loom-style)
-Composite screen and camera (e.g., camera bubble) into a single encoded MP4/MOV in real-time.
+### Phase 2: Post-capture Studio Compositing
+Retain separate source tracks, then compose the camera bubble, mixed audio, canvas,
+smoothed cursor, click ripples, and click-focused zoom into a single MP4 after stop.
+Keeping the raw tracks makes camera placement and cinematic effects reversible.
 
 ## 4. AI Pipeline
 - **Transcription:** Deepgram SDK or Whisper (Native implementation).

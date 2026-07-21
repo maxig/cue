@@ -1,5 +1,22 @@
 import Foundation
 
+struct CueTranscriptResult: Sendable {
+    let text: String
+    let vtt: String?
+}
+
+struct CueSummaryResult: Sendable {
+    let title: String
+    let summary: String
+}
+
+struct CueRemoteInsights: Sendable {
+    let title: String
+    let transcript: String?
+    let transcriptVTT: String?
+    let summary: String?
+}
+
 /// The full self-hosted flow: PUT the file to MinIO, then register it with the
 /// Cue backend, which returns a player URL (e.g. http://localhost:8787/v/<id>)
 /// that resolves to a real web player streaming from MinIO.
@@ -93,22 +110,83 @@ final class CueBackendUploadService: UploadService {
 
     /// Deletes the recording from R2 + backend metadata (owner action).
     func deleteRemote(recording: Recording) async throws {
-        try await ownerRequest(path: "/api/videos/\(recording.id.uuidString.lowercased())", method: "DELETE")
+        _ = try await ownerRequest(path: "/api/videos/\(recording.id.uuidString.lowercased())", method: "DELETE")
     }
 
     /// Disables or re-enables the public share link (owner action).
     func setShareDisabled(_ disabled: Bool, recording: Recording) async throws {
         let action = disabled ? "disable" : "enable"
-        try await ownerRequest(path: "/api/videos/\(recording.id.uuidString.lowercased())/\(action)", method: "POST")
+        _ = try await ownerRequest(path: "/api/videos/\(recording.id.uuidString.lowercased())/\(action)", method: "POST")
     }
 
-    private func ownerRequest(path: String, method: String) async throws {
+    /// Updates the server-side title so native and web libraries stay in sync.
+    func updateTitle(_ title: String, recording: Recording) async throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: ["title": title])
+        let response = try await ownerRequest(
+            path: "/api/videos/\(recording.id.uuidString.lowercased())/title",
+            method: "POST",
+            body: data
+        )
+        struct Payload: Decodable { let title: String }
+        return try decode(Payload.self, from: response).title
+    }
+
+    /// Runs Whisper for a recording already registered with the Cue server.
+    func transcribe(recording: Recording) async throws -> CueTranscriptResult {
+        let data = try await ownerRequest(
+            path: "/api/videos/\(recording.id.uuidString.lowercased())/transcribe",
+            method: "POST"
+        )
+        struct Payload: Decodable { let text: String; let vtt: String? }
+        let payload: Payload = try decode(Payload.self, from: data)
+        return CueTranscriptResult(text: payload.text, vtt: payload.vtt)
+    }
+
+    /// Generates a summary. The server transcribes first when necessary.
+    func summarize(recording: Recording) async throws -> CueSummaryResult {
+        let data = try await ownerRequest(
+            path: "/api/videos/\(recording.id.uuidString.lowercased())/summarize",
+            method: "POST"
+        )
+        struct Payload: Decodable { let title: String; let summary: String }
+        let payload: Payload = try decode(Payload.self, from: data)
+        return CueSummaryResult(title: payload.title, summary: payload.summary)
+    }
+
+    /// Fetches any insights already generated on the server, allowing the app
+    /// to sync results created in either the native Library or web dashboard.
+    func fetchInsights(recording: Recording) async throws -> CueRemoteInsights {
+        let data = try await ownerRequest(
+            path: "/api/videos/\(recording.id.uuidString.lowercased())",
+            method: "GET"
+        )
+        struct Payload: Decodable {
+            let title: String
+            let transcript: String?
+            let transcriptVtt: String?
+            let summary: String?
+        }
+        let payload: Payload = try decode(Payload.self, from: data)
+        return CueRemoteInsights(
+            title: payload.title,
+            transcript: payload.transcript,
+            transcriptVTT: payload.transcriptVtt,
+            summary: payload.summary
+        )
+    }
+
+    @discardableResult
+    private func ownerRequest(path: String, method: String, body: Data? = nil) async throws -> Data {
         let base = backendBaseURL.trimmingTrailingSlash()
         guard !base.isEmpty, let url = URL(string: base + path) else {
             throw UploadError.notConfigured("backend URL")
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
+        request.httpBody = body
+        if body != nil {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
         if !ownerToken.isEmpty {
             request.setValue("Bearer \(ownerToken)", forHTTPHeaderField: "Authorization")
         }
@@ -116,6 +194,15 @@ final class CueBackendUploadService: UploadService {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             throw UploadError.server(status: status, body: String(data: data, encoding: .utf8) ?? "")
+        }
+        return data
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            throw UploadError.invalidResponse(error.localizedDescription)
         }
     }
 

@@ -18,8 +18,8 @@ struct MouseSample: Codable, Hashable {
     var y: Double
 }
 
-/// Captured pointer activity for a display recording, consumed by upcoming
-/// cinematic effects (smooth cursor from `moves`, ripples + zoom from `clicks`).
+/// Captured pointer activity for a display recording, consumed by cinematic
+/// effects (smooth cursor from `moves`, ripples + zoom from `clicks`).
 struct MouseActivity: Codable, Hashable {
     var moves: [MouseSample]
     var clicks: [MouseSample]
@@ -63,6 +63,12 @@ struct CompositionPlan: Codable, Hashable {
     /// Sidecar JSON of captured pointer activity (clicks + path) for cinematic
     /// effects. Nil when nothing was captured (e.g. window / camera-only).
     var activityFileName: String?
+    /// Whether pointer smoothing, click ripples, and click-focused auto-zoom are
+    /// baked into the current final.mp4. Optional for older saved plans.
+    var cinematicEffectsEnabled: Bool?
+    /// Whether ScreenCaptureKit baked its native cursor into the retained screen
+    /// track. Older plans decode as nil and are treated as true.
+    var sourceShowsCursor: Bool?
 }
 
 /// Metadata for one captured session. Media files live in a per-recording
@@ -91,6 +97,15 @@ struct Recording: Identifiable, Codable, Hashable {
 
     var captureMode: CaptureMode
     var share: ShareStatus
+    /// Backend used for the current remote copy. Optional for recordings saved
+    /// before this field existed; those are safely re-registered when needed.
+    var uploadBackend: UploadBackend?
+
+    /// AI insights cached locally so the Library can show them without opening
+    /// or signing in to the web dashboard.
+    var transcript: String?
+    var transcriptVTT: String?
+    var summary: String?
 
     /// Saved compose inputs, enabling post-record re-rendering (camera reposition
     /// + cinematic effects). Nil for entries recorded before this existed.
@@ -109,6 +124,10 @@ struct Recording: Identifiable, Codable, Hashable {
          height: Int? = nil,
          captureMode: CaptureMode = .screen,
          share: ShareStatus = .local,
+         uploadBackend: UploadBackend? = nil,
+         transcript: String? = nil,
+         transcriptVTT: String? = nil,
+         summary: String? = nil,
          plan: CompositionPlan? = nil) {
         self.id = id
         self.title = title
@@ -123,6 +142,10 @@ struct Recording: Identifiable, Codable, Hashable {
         self.height = height
         self.captureMode = captureMode
         self.share = share
+        self.uploadBackend = uploadBackend
+        self.transcript = transcript
+        self.transcriptVTT = transcriptVTT
+        self.summary = summary
         self.plan = plan
     }
 

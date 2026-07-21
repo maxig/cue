@@ -79,6 +79,13 @@ const BASE_CSS = `
   video { width: 100%; display: block; aspect-ratio: 16/10; background: #000; }
   .meta { padding: 16px 18px; }
   .title { font-size: 22px; font-weight: 700; margin: 0 0 6px; }
+  .title-form { display: flex; gap: 7px; align-items: center; margin: 0 0 8px; }
+  .title-input { width: 100%; min-width: 0; background: rgba(255,255,255,.05); border: 1px solid var(--panel-border);
+                 color: var(--text); border-radius: 10px; padding: 8px 10px; font-family: inherit; font-size: 17px;
+                 line-height: 1.2; font-weight: 700; }
+  .title-input:focus { outline: none; border-color: rgba(10,132,255,.65); }
+  .save-title { border: none; cursor: pointer; color: #fff; font-weight: 600; font-size: 12px;
+                background: var(--accent); border-radius: 10px; padding: 8px 12px; }
   .submeta { color: var(--muted); font-size: 13px; display: flex; gap: 14px; flex-wrap: wrap; }
   .submeta span { display: inline-flex; gap: 6px; align-items: center; }
   .reactions { display: flex; gap: 8px; padding: 12px 18px 0; }
@@ -105,7 +112,7 @@ const BASE_CSS = `
   footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 28px; }
 `;
 
-export function renderPlayer(v) {
+export function renderPlayer(v, { editable = false } = {}) {
   const share = esc(v.shareURL);
   const media = esc(v.mediaURL);
   return `<!doctype html>
@@ -137,7 +144,12 @@ export function renderPlayer(v) {
 
     <div class="card">
       <div class="meta">
-        <h1 class="title">${esc(v.title)}</h1>
+        ${editable
+          ? `<form class="title-form" method="post" action="/videos/${esc(v.id)}/title">
+              <input class="title-input" name="title" value="${esc(v.title)}" maxlength="100" aria-label="Video title" required />
+              <button class="save-title" type="submit">Save</button>
+            </form>`
+          : `<h1 class="title">${esc(v.title)}</h1>`}
         <div class="submeta">
           <span>📅 ${esc(fmtDate(v.createdAt))}</span>
           <span>⏱ ${esc(fmtDuration(v.durationSeconds))}</span>
@@ -150,9 +162,9 @@ export function renderPlayer(v) {
         <button onclick="tab(this,'activity')">Activity</button>
       </div>
       <div class="tabbody">
-        <div data-tab="summary">An AI summary and smart chapters will appear here. <span class="soon">Phase 2</span></div>
-        <div data-tab="transcript" hidden>A searchable, word-level transcript will appear here. <span class="soon">Phase 2</span></div>
-        <div data-tab="activity" hidden>Views, reactions, and comments will appear here. <span class="soon">Phase 2</span></div>
+        <div data-tab="summary">AI summaries are available when Cue is connected to the Cloudflare backend.</div>
+        <div data-tab="transcript" hidden>AI transcripts are available when Cue is connected to the Cloudflare backend.</div>
+        <div data-tab="activity" hidden>Reactions and comments are available on the Cloudflare player.</div>
       </div>
     </div>
   </div>

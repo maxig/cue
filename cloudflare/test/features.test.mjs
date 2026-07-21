@@ -109,3 +109,76 @@ test("public player renders stored VTT as clickable timestamped transcript lines
   assert.match(markup, /onclick="seekTo\(1\.25\)"/);
   assert.match(markup, /Hello world\./);
 });
+
+test("summary generation creates a concise title and timestamped smart chapters", async () => {
+  const row = {
+    ...sampleRow,
+    title: "Cue · Jul 21, 2:30 PM",
+    transcript_vtt: "WEBVTT\n\n00:00.000 --> 00:08.000\nProject introduction.\n\n00:08.000 --> 00:30.000\nLive product demo.\n",
+  };
+  const { env, writes } = mockEnvironment(row);
+  env.AI = {
+    async run() {
+      return {
+        response: {
+          title: "Shipping the New Search Experience",
+          overview: "A walkthrough of the new search experience and its rollout plan.",
+          keyPoints: ["Search is faster", "The rollout starts next week"],
+          chapters: [
+            { startSeconds: 0, title: "Introduction" },
+            { startSeconds: 8, title: "Product demo" },
+          ],
+        },
+      };
+    },
+  };
+
+  const response = await worker.fetch(ownerRequest("https://cue.test/api/videos/video-1/summarize", {
+    method: "POST",
+  }), env);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.title, "Shipping the New Search Experience");
+  assert.deepEqual(payload.chapters, [
+    { startSeconds: 0, title: "Introduction" },
+    { startSeconds: 8, title: "Product demo" },
+  ]);
+  assert.match(payload.summary, /Chapters:\n- 0:00 — Introduction/);
+
+  const update = writes.find(({ sql }) => sql.includes("UPDATE videos SET title"));
+  assert.ok(update, "expected title and summary update");
+  assert.equal(update.values[0], "Shipping the New Search Experience");
+});
+
+test("owner can rename a video through the API and web management form", async () => {
+  const { env, writes } = mockEnvironment();
+  const apiResponse = await worker.fetch(ownerRequest("https://cue.test/api/videos/video-1/title", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "  Quarterly   planning  " }),
+  }), env);
+  assert.equal(apiResponse.status, 200);
+  assert.equal((await apiResponse.json()).title, "Quarterly planning");
+
+  const formResponse = await worker.fetch(ownerRequest("https://cue.test/app/v/video-1", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", origin: "https://cue.test" },
+    body: new URLSearchParams({ action: "rename", title: "Launch review" }),
+  }), env);
+  assert.equal(formResponse.status, 303);
+  assert.ok(writes.some(({ sql, values }) => sql.includes("UPDATE videos SET title") && values[0] === "Launch review"));
+});
+
+test("public player renders stored smart chapters as seek controls", async () => {
+  const row = {
+    ...sampleRow,
+    summary: "A concise overview.\n\nKey points:\n- One\n\nChapters:\n- 0:00 — Introduction\n- 0:12 — Demo",
+  };
+  const { env } = mockEnvironment(row);
+  const response = await worker.fetch(new Request("https://cue.test/v/video-1"), env);
+  assert.equal(response.status, 200);
+  const markup = await response.text();
+  assert.match(markup, /class="chapter" onclick="seekTo\(12\)"/);
+  assert.match(markup, />Demo<\/span>/);
+  assert.doesNotMatch(markup, /Chapters:\s*- 0:00/);
+});

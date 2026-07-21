@@ -162,6 +162,14 @@ const BASE_CSS = `
   .tabs button.active { color: var(--text); background: rgba(255,255,255,0.08); }
   .tabbody { padding: 0 18px 18px; color: var(--muted); font-size: 13.5px; }
   .transcript { white-space: pre-wrap; line-height: 1.6; color: var(--text); max-height: 340px; overflow: auto; }
+  .chapters { display: grid; gap: 7px; margin-top: 14px; }
+  .chapters-label { color: var(--text); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+  .chapter { width: 100%; display: grid; grid-template-columns: 48px 1fr; gap: 9px; align-items: center;
+             border: 1px solid var(--panel-border); background: rgba(255,255,255,.035); color: var(--text);
+             border-radius: 10px; padding: 7px 9px; text-align: left; cursor: pointer; font: inherit; }
+  .chapter:hover { background: rgba(10,132,255,.12); border-color: rgba(10,132,255,.35); }
+  .chapter time { color: var(--accent); font-size: 11.5px; font-weight: 700; }
+  .chapter span { font-size: 12.5px; line-height: 1.35; }
   .soon {
     display: inline-block; margin-top: 8px; font-size: 11px; font-weight: 700; color: var(--accent);
     background: rgba(10,132,255,0.14); padding: 3px 9px; border-radius: 999px;
@@ -201,6 +209,11 @@ const ENGAGE_CSS = `
               padding: 12px 14px; margin-bottom: 14px; }
   .ownerbar .ob-status, .ownerbar .ob-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .ownerbar form { margin: 0; }
+  .title-form { display: flex; gap: 7px; align-items: center; margin: 0 0 8px; }
+  .title-input { width: 100%; min-width: 0; background: rgba(255,255,255,.05); border: 1px solid var(--panel-border);
+                 color: var(--text); border-radius: 10px; padding: 8px 10px; font-family: inherit; font-size: 17px;
+                 line-height: 1.2; font-weight: 700; }
+  .title-input:focus { outline: none; border-color: rgba(10,132,255,.65); }
 
   .commentcard { margin-top: 14px; padding: 14px 16px 16px; }
   .comments-head { font-weight: 700; font-size: 14px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
@@ -399,12 +412,19 @@ export function renderPlayer(v, opts = {}) {
         ? `<div class="transcript">${esc(v.transcript)}</div>`
         : (owner
             ? `No transcript yet — use <b>Transcribe</b> above to generate one.`
-            : `A searchable, word-level transcript will appear here. <span class="soon">Phase 2</span>`));
+            : `No transcript has been generated for this recording yet.`));
+  const chapters = Array.isArray(v.chapters) ? v.chapters : [];
+  const summaryText = String(v.summary || "").replace(/\n\nChapters:\s*\n[\s\S]*$/i, "").trim();
+  const chapterBody = chapters.length
+    ? `<div class="chapters"><div class="chapters-label">Chapters</div>${chapters.map((chapter) =>
+        `<button type="button" class="chapter" onclick="seekTo(${Number(chapter.startSeconds) || 0})"><time>${esc(fmtDuration(chapter.startSeconds))}</time><span>${esc(chapter.title)}</span></button>`
+      ).join("")}</div>`
+    : "";
   const summaryBody = v.summary
-    ? `<div class="transcript">${esc(v.summary)}</div>`
+    ? `<div class="transcript">${esc(summaryText)}</div>${chapterBody}`
     : (owner
         ? `No summary yet — use <b>Summarize</b> above to generate one.`
-        : `An AI summary and smart chapters will appear here. <span class="soon">Phase 2</span>`);
+        : `No AI summary has been generated for this recording yet.`);
 
   const reactionButtons = REACTION_EMOJI.map((e) => {
     const n = Number(counts[e] || 0);
@@ -468,7 +488,13 @@ export function renderPlayer(v, opts = {}) {
 
     <div class="card">
       <div class="meta">
-        <h1 class="title">${esc(v.title)}</h1>
+        ${owner
+          ? `<form class="title-form" method="post" action="/app/v/${esc(v.id)}">
+              <input type="hidden" name="action" value="rename" />
+              <input class="title-input" name="title" value="${esc(v.title)}" maxlength="100" aria-label="Video title" required />
+              <button class="btn" type="submit">Save</button>
+            </form>`
+          : `<h1 class="title">${esc(v.title)}</h1>`}
         <div class="submeta">
           <span>📅 ${esc(fmtDate(v.createdAt))}</span>
           <span>⏱ ${esc(fmtDuration(v.durationSeconds))}</span>

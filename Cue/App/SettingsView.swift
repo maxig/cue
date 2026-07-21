@@ -85,6 +85,11 @@ struct SettingsView: View {
                     ? "Smoother motion for fast-moving content; larger files."
                     : "Standard 30 fps — smaller files, ideal for most screen recordings.")
             Divider().opacity(0.5)
+            ToggleRow("Cinematic pointer effects", isOn: Binding(
+                get: { prefs.cinematicEffectsEnabled },
+                set: { prefs.cinematicEffectsEnabled = $0 }))
+            Caption("Smooths the cursor, adds a click ripple, and gently zooms toward clicks in display recordings.")
+            Divider().opacity(0.5)
             ToggleRow("Capture system audio",
                       isOn: $app.config.captureSystemAudio)
         }
@@ -140,11 +145,11 @@ struct SettingsView: View {
 
     private var backgroundCard: some View {
         Card("Background") {
-            LabeledRow("Style") {
-                Picker("", selection: Binding(get: { prefs.canvasBackground }, set: { prefs.canvasBackground = $0 })) {
-                    ForEach(CanvasBackground.allCases) { Text($0.title).tag($0) }
-                }
-                .labelsHidden().fixedSize()
+            StackedRow("Style") {
+                CanvasBackgroundPicker(selection: Binding(
+                    get: { prefs.canvasBackground },
+                    set: { prefs.canvasBackground = $0 }
+                ))
             }
             Divider().opacity(0.5)
             StackedRow("Padding") {
@@ -182,8 +187,8 @@ struct SettingsView: View {
             if settings.backend == .cueServer {
                 Card("Server") {
                     Field("Worker URL", \.backendBaseURL, "https://cue.example.com")
-                    Field("Owner token (optional)", \.ownerToken, "", secure: true)
-                    Caption("Locks delete / disable / upload to you. Leave blank to keep them open; if set, use the same value as the Worker’s OWNER_TOKEN secret.")
+                    Field("Owner token", \.ownerToken, "", secure: true)
+                    Caption("Authenticates uploads, share management, and Library AI without a web login. Use the same value as the Worker’s OWNER_TOKEN secret; it stays in the macOS Keychain.")
                 }
             }
 
@@ -262,6 +267,112 @@ struct SettingsView: View {
 }
 
 // MARK: - Building blocks
+
+private struct CanvasBackgroundPicker: View {
+    @Binding var selection: CanvasBackground
+
+    private let columns = Array(
+        repeating: GridItem(.flexible(), spacing: 8),
+        count: 3
+    )
+
+    private var presets: [CanvasBackground] {
+        CanvasBackground.allCases.filter { !$0.isArtwork }
+    }
+
+    private var artwork: [CanvasBackground] {
+        CanvasBackground.allCases.filter(\.isArtwork)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            backgroundGrid(presets)
+
+            Text("ARTWORK")
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Theme.tertiaryText)
+
+            backgroundGrid(artwork)
+        }
+    }
+
+    private func backgroundGrid(_ backgrounds: [CanvasBackground]) -> some View {
+        LazyVGrid(columns: columns, spacing: 10) {
+            ForEach(backgrounds) { background in
+                Button {
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        selection = background
+                    }
+                } label: {
+                    VStack(spacing: 4) {
+                        ZStack(alignment: .topTrailing) {
+                            CanvasBackgroundPreview(background: background)
+                                .frame(height: 42)
+                                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .stroke(selection == background ? Theme.accent : Color.white.opacity(0.12),
+                                                lineWidth: selection == background ? 2 : 0.5)
+                                }
+
+                            if selection == background {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 7, weight: .black))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 14, height: 14)
+                                    .background(Circle().fill(Theme.accent))
+                                    .padding(4)
+                            }
+                        }
+
+                        Text(background.title)
+                            .font(.system(size: 9.5, weight: selection == background ? .semibold : .medium))
+                            .foregroundStyle(selection == background ? Theme.primaryText : Theme.secondaryText)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(background.title)
+                .accessibilityValue(selection == background ? "Selected" : "")
+            }
+        }
+    }
+}
+
+private struct CanvasBackgroundPreview: View {
+    let background: CanvasBackground
+
+    var body: some View {
+        Group {
+            if let assetName = background.assetName {
+                Image(assetName)
+                    .resizable()
+                    .scaledToFill()
+            } else if let stops = background.gradient {
+                LinearGradient(
+                    colors: [color(stops.top), color(stops.bottom)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            } else {
+                ZStack {
+                    Color.black.opacity(0.16)
+                    Image(systemName: "rectangle.slash")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Theme.secondaryText)
+                }
+            }
+        }
+    }
+
+    private func color(_ rgb: (Double, Double, Double)) -> Color {
+        Color(red: rgb.0, green: rgb.1, blue: rgb.2)
+    }
+}
 
 private struct Card<Content: View>: View {
     let title: String

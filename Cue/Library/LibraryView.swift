@@ -27,6 +27,13 @@ struct LibraryView: View {
             }
         }
         .background(VisualEffectBlur(material: .underWindowBackground, blendingMode: .behindWindow))
+        .alert("Something went wrong",
+               isPresented: Binding(get: { app.errorMessage != nil },
+                                    set: { if !$0 { app.errorMessage = nil } })) {
+            Button("OK", role: .cancel) { app.errorMessage = nil }
+        } message: {
+            Text(app.errorMessage ?? "")
+        }
     }
 
     private var sidebar: some View {
@@ -131,15 +138,15 @@ private struct RecordingDetailView: View {
     /// support). `.id` resets the editor's state when the selection changes.
     @ViewBuilder
     private var cameraStudioBlock: some View {
-        if recording.cameraFileName != nil, recording.plan != nil {
+        if let plan = recording.plan,
+           recording.cameraFileName != nil || plan.activityFileName != nil {
             CameraStudioCard(recording: recording).id(recording.id)
         }
     }
 
     private var headerBlock: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(recording.title)
-                .font(.system(size: 22, weight: .bold))
+            EditableRecordingTitle(recording: recording)
             HStack(spacing: 8) {
                 Label(recording.createdAt.formatted(date: .abbreviated, time: .shortened),
                       systemImage: "calendar")
@@ -247,31 +254,230 @@ private struct RecordingDetailView: View {
     }
 
     private var insightsBlock: some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.lg) {
-            insightCard(title: "Summary", systemImage: "text.alignleft",
-                        body: "AI summary, smart chapters, and a searchable transcript arrive in Phase 2.")
-            insightCard(title: "Reactions", systemImage: "face.smiling",
-                        body: "Timestamped emoji reactions and threaded comments are coming on the web player.")
+        AIInsightsCard(recording: recording)
+    }
+}
+
+private struct EditableRecordingTitle: View {
+    @EnvironmentObject private var app: AppState
+    let recording: Recording
+    @State private var draft: String
+    @State private var isEditing = false
+
+    init(recording: Recording) {
+        self.recording = recording
+        _draft = State(initialValue: recording.title)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if isEditing {
+                TextField("Video title", text: $draft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 22, weight: .bold))
+                    .onSubmit { save() }
+
+                Button("Cancel") {
+                    draft = recording.title
+                    isEditing = false
+                }
+                .buttonStyle(.glassControl)
+
+                Button("Save") { save() }
+                    .buttonStyle(.prominentGlass)
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } else {
+                Text(recording.title)
+                    .font(.system(size: 22, weight: .bold))
+                    .lineLimit(2)
+                Button {
+                    draft = recording.title
+                    isEditing = true
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.glassControl)
+                .help("Rename recording")
+            }
+            Spacer(minLength: 0)
+        }
+        .onChange(of: recording.title) { _, title in
+            if !isEditing { draft = title }
         }
     }
 
-    private func insightCard(title: String, systemImage: String, body: String) -> some View {
+    private func save() {
+        let title = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        isEditing = false
+        Task { await app.rename(recording, to: title) }
+    }
+}
+
+// MARK: - AI insights
+
+private enum InsightsTab: String, CaseIterable, Identifiable {
+    case summary
+    case transcript
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+private struct AIInsightsCard: View {
+    @EnvironmentObject private var app: AppState
+    let recording: Recording
+    @State private var tab: InsightsTab = .summary
+
+    private var phase: AppState.InsightGenerationPhase? {
+        app.insightGeneration[recording.id]
+    }
+
+    private var isConfigured: Bool {
+        app.uploadSettings.backend == .cueServer
+            && !app.uploadSettings.backendBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !app.uploadSettings.ownerToken.isEmpty
+    }
+
+    private var canRefresh: Bool {
+        recording.uploadBackend == .cueServer && recording.shareURL != nil
+    }
+
+    var body: some View {
         GlassCard {
-            VStack(alignment: .leading, spacing: 8) {
-                Label(title, systemImage: systemImage)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(body)
-                    .font(.cueCaption)
-                    .foregroundStyle(Theme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("Coming soon")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(Theme.accent)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Capsule().fill(Theme.accent.opacity(0.14)))
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    Label("AI insights", systemImage: "sparkles")
+                        .font(.system(size: 14, weight: .semibold))
+                    Spacer()
+                    if let phase {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(phase.title)
+                            .font(.cueCaption)
+                            .foregroundStyle(Theme.secondaryText)
+                    } else if canRefresh {
+                        Button {
+                            Task { await app.refreshInsights(recording) }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.glassControl)
+                        .help("Refresh insights from the Cue server")
+                    }
+                }
+
+                Picker("Insight", selection: $tab) {
+                    ForEach(InsightsTab.allCases) { item in
+                        Text(item.title).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 280)
+
+                Group {
+                    switch tab {
+                    case .summary: summaryPane
+                    case .transcript: transcriptPane
+                    }
+                }
+
+                if !isConfigured {
+                    Label("Choose Cue server and add its owner token in Settings to generate insights here.",
+                          systemImage: "gearshape")
+                        .font(.cueCaption)
+                        .foregroundStyle(Theme.secondaryText)
+                } else {
+                    Text("Local-only recordings are uploaded privately with their public link turned off. Results are saved in this Library.")
+                        .font(.cueCaption)
+                        .foregroundStyle(Theme.tertiaryText)
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear { selectAvailableTab() }
+        .onChange(of: recording.transcript) { _, newValue in
+            if recording.summary == nil, newValue != nil { tab = .transcript }
+        }
+        .onChange(of: recording.summary) { _, newValue in
+            if newValue != nil { tab = .summary }
+        }
+    }
+
+    @ViewBuilder
+    private var summaryPane: some View {
+        if let summary = recording.summary, !summary.isEmpty {
+            Text(summary)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.primaryText)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                Task { await app.generateSummary(recording) }
+            } label: {
+                Label("Regenerate summary", systemImage: "sparkles")
+            }
+            .buttonStyle(.glassControl)
+            .disabled(phase != nil || !isConfigured)
+        } else {
+            Text("Create a concise overview and key points from this recording’s audio.")
+                .font(.cueCaption)
+                .foregroundStyle(Theme.secondaryText)
+
+            Button {
+                Task { await app.generateSummary(recording) }
+            } label: {
+                Label("Generate summary", systemImage: "sparkles")
+            }
+            .buttonStyle(.prominentGlass)
+            .disabled(phase != nil || !isConfigured)
+        }
+    }
+
+    @ViewBuilder
+    private var transcriptPane: some View {
+        if let transcript = recording.transcript, !transcript.isEmpty {
+            ScrollView {
+                Text(transcript)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.primaryText)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 280)
+
+            HStack {
+                Text("\(transcript.split(whereSeparator: \.isWhitespace).count) words")
+                    .font(.cueCaption)
+                    .foregroundStyle(Theme.tertiaryText)
+                Spacer()
+                Button {
+                    Task { await app.generateTranscript(recording) }
+                } label: {
+                    Label("Re-transcribe", systemImage: "waveform")
+                }
+                .buttonStyle(.glassControl)
+                .disabled(phase != nil || !isConfigured)
+            }
+        } else {
+            Text("Turn the recording’s audio into searchable, selectable text.")
+                .font(.cueCaption)
+                .foregroundStyle(Theme.secondaryText)
+
+            Button {
+                Task { await app.generateTranscript(recording) }
+            } label: {
+                Label("Generate transcript", systemImage: "waveform")
+            }
+            .buttonStyle(.prominentGlass)
+            .disabled(phase != nil || !isConfigured)
+        }
+    }
+
+    private func selectAvailableTab() {
+        if recording.summary != nil { tab = .summary }
+        else if recording.transcript != nil { tab = .transcript }
     }
 }
 
@@ -283,10 +489,12 @@ private struct CameraStudioCard: View {
     @EnvironmentObject private var app: AppState
     let recording: Recording
     @State private var placement: CameraPlacement
+    @State private var cinematicEffects: Bool
 
     init(recording: Recording) {
         self.recording = recording
         _placement = State(initialValue: recording.plan?.cameraPlacement ?? .default)
+        _cinematicEffects = State(initialValue: recording.plan?.cinematicEffectsEnabled ?? false)
     }
 
     private var busy: Bool { app.isRecomposing != nil }
@@ -299,50 +507,73 @@ private struct CameraStudioCard: View {
     var body: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 12) {
-                Label("Camera position", systemImage: "person.crop.rectangle")
+                Label("Studio", systemImage: "wand.and.stars")
                     .font(.system(size: 14, weight: .semibold))
-                Text("Drag the bubble to reposition it and set its size, then re-render. The edit replaces the local clip and drops the share back to local so you can re-upload.")
+                Text("Re-render from the retained raw tracks. The edit replaces the local clip and drops the share back to local so you can re-upload.")
                     .font(.cueCaption)
                     .foregroundStyle(Theme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
-                GeometryReader { geo in
-                    ZStack(alignment: .topLeading) {
-                        RecordingThumbnail(url: app.store.thumbnailURL(for: recording))
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(.white.opacity(0.08)))
+                if recording.cameraFileName != nil {
+                    Text("Camera position")
+                        .font(.cueCaption)
+                        .foregroundStyle(Theme.secondaryText)
+                    GeometryReader { geo in
+                        ZStack(alignment: .topLeading) {
+                            RecordingThumbnail(url: app.store.thumbnailURL(for: recording))
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(.white.opacity(0.08)))
 
-                        let d = max(20, geo.size.width * placement.size)
-                        Circle()
-                            .fill(Theme.accent.opacity(0.20))
-                            .overlay(Circle().strokeBorder(Theme.accent, lineWidth: 2))
-                            .frame(width: d, height: d)
-                            .position(x: placement.centerX * geo.size.width,
-                                      y: placement.centerY * geo.size.height)
-                            .gesture(
-                                DragGesture()
-                                    .onChanged { value in
-                                        let radius = placement.size / 2
-                                        placement.centerX = min(max(value.location.x / geo.size.width, radius), 1 - radius)
-                                        placement.centerY = min(max(value.location.y / geo.size.height, radius), 1 - radius)
-                                    }
-                            )
+                            let d = max(20, geo.size.width * placement.size)
+                            Circle()
+                                .fill(Theme.accent.opacity(0.20))
+                                .overlay(Circle().strokeBorder(Theme.accent, lineWidth: 2))
+                                .frame(width: d, height: d)
+                                .position(x: placement.centerX * geo.size.width,
+                                          y: placement.centerY * geo.size.height)
+                                .gesture(
+                                    DragGesture()
+                                        .onChanged { value in
+                                            let radius = placement.size / 2
+                                            placement.centerX = min(max(value.location.x / geo.size.width, radius), 1 - radius)
+                                            placement.centerY = min(max(value.location.y / geo.size.height, radius), 1 - radius)
+                                        }
+                                )
+                        }
+                    }
+                    .aspectRatio(previewAspectRatio, contentMode: .fit)
+                    .frame(maxWidth: .infinity)
+
+                    HStack(spacing: 10) {
+                        Text("Size").font(.cueCaption).foregroundStyle(Theme.secondaryText)
+                        Slider(value: $placement.size, in: 0.12...0.45)
                     }
                 }
-                .aspectRatio(previewAspectRatio, contentMode: .fit)
-                .frame(maxWidth: .infinity)
 
-                HStack(spacing: 10) {
-                    Text("Size").font(.cueCaption).foregroundStyle(Theme.secondaryText)
-                    Slider(value: $placement.size, in: 0.12...0.45)
+                if recording.plan?.activityFileName != nil {
+                    Toggle(isOn: $cinematicEffects) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Click cinematography").font(.system(size: 12.5, weight: .medium))
+                            Text("Adds click ripples and gentle auto-zoom; new recordings also use a smoothed cursor.")
+                                .font(.cueCaption)
+                                .foregroundStyle(Theme.secondaryText)
+                        }
+                    }
+                    .toggleStyle(.switch)
                 }
 
                 Button {
-                    Task { await app.recompose(recording, placement: placement) }
+                    Task {
+                        await app.recompose(
+                            recording,
+                            placement: recording.cameraFileName == nil ? nil : placement,
+                            cinematicEffects: cinematicEffects
+                        )
+                    }
                 } label: {
-                    Label(busy ? "Re-rendering…" : "Re-render with new position",
+                    Label(busy ? "Re-rendering…" : "Apply Studio edits",
                           systemImage: "wand.and.stars")
                 }
                 .buttonStyle(.prominentGlass)

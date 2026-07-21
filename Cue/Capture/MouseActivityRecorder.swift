@@ -30,8 +30,9 @@ final class MouseActivityRecorder {
     /// Global monitors observe events while *other* apps are focused (i.e. while
     /// the user is recording their screen) and need no accessibility grant for
     /// mouse events.
-    func start() {
-        guard monitors.isEmpty else { return }
+    @discardableResult
+    func start() -> Bool {
+        guard monitors.isEmpty else { return true }
         let moveMask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged]
         let clickMask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
         if let m = NSEvent.addGlobalMonitorForEvents(matching: moveMask, handler: { [weak self] _ in
@@ -40,6 +41,16 @@ final class MouseActivityRecorder {
         if let c = NSEvent.addGlobalMonitorForEvents(matching: clickMask, handler: { [weak self] _ in
             self?.record(isClick: true)
         }) { monitors.append(c) }
+        return !monitors.isEmpty
+    }
+
+    /// Seeds the content timeline with the cursor's current position so a custom
+    /// smoothed cursor is visible even before the user first moves the mouse.
+    func markContentStart() {
+        guard !monitors.isEmpty else { return }
+        let now = CACurrentMediaTime()
+        events.append(RawEvent(t: now, point: NSEvent.mouseLocation, isClick: false))
+        lastMoveT = now
     }
 
     private func record(isClick: Bool) {

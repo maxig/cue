@@ -37,6 +37,8 @@ final class RecordingEngine: ObservableObject {
     /// The capture frame rate chosen at `start` (30 or 60). Remembered so the
     /// final composition is rendered at the same rate instead of a fixed 30.
     private var captureFPS: Int = 30
+    private var cinematicEffectsEnabled = true
+    private var sourceShowsCursor = true
 
     // Pause + camera-toggle bookkeeping (composition-time seconds).
     private var pausedWallTotal: Double = 0
@@ -69,7 +71,8 @@ final class RecordingEngine: ObservableObject {
                padding: Double,
                background: CanvasBackground,
                aspectMode: AspectRatioMode,
-               fps: Int = 30) async throws {
+               fps: Int = 30,
+               cinematicEffects: Bool = true) async throws {
         guard currentID == nil else { throw RecordingError.alreadyRecording }
 
         let id = UUID()
@@ -85,6 +88,7 @@ final class RecordingEngine: ObservableObject {
         self.canvasBackground = background
         self.aspectMode = aspectMode
         self.captureFPS = fps == 60 ? 60 : 30
+        self.cinematicEffectsEnabled = cinematicEffects
         self.usedCamera = false
         self.usedScreen = false
         self.contentStartAnchor = nil
@@ -95,12 +99,26 @@ final class RecordingEngine: ObservableObject {
         self.cameraDisableStart = nil
         self.cameraIsOn = true
 
+        captureDisplayFrame = nil
+        if config.mode != .window, config.mode != .cameraOnly,
+           let displayID = config.display?.scDisplay.displayID,
+           let frame = Self.screenFrame(for: displayID) {
+            captureDisplayFrame = frame
+        }
+        sourceShowsCursor = !cinematicEffects || captureDisplayFrame == nil
+        if !sourceShowsCursor, !mouseActivity.start() {
+            // If macOS refuses a global event monitor, retain the native cursor
+            // rather than producing a cursor-less source track.
+            sourceShowsCursor = true
+        }
+
         let micID = (config.microphoneEnabled && config.microphone?.isNone == false)
             ? config.microphone?.id : nil
 
         // Screen track (all modes except camera-only)
         if config.mode != .cameraOnly {
             guard let (width, height, filter) = await makeFilterAndSize(config: config) else {
+                mouseActivity.cancel()
                 reset()
                 throw RecordingError.noCaptureTarget
             }
@@ -112,9 +130,16 @@ final class RecordingEngine: ObservableObject {
                 captureSystemAudio: config.captureSystemAudio,
                 captureMicrophone: micID != nil,
                 microphoneDeviceID: micID,
-                outputFolder: folder
+                outputFolder: folder,
+                showsCursor: sourceShowsCursor
             )
-            try await screenRecorder.start(options: options)
+            do {
+                try await screenRecorder.start(options: options)
+            } catch {
+                mouseActivity.cancel()
+                reset()
+                throw error
+            }
             usedScreen = true
         }
 
@@ -126,13 +151,9 @@ final class RecordingEngine: ObservableObject {
             usedCamera = true
         }
 
-        // Start pointer monitoring only after capture setup succeeds; otherwise
-        // a failed start could leave a global event monitor installed.
-        captureDisplayFrame = nil
-        if config.mode != .window, config.mode != .cameraOnly,
-           let displayID = config.display?.scDisplay.displayID,
-           let frame = Self.screenFrame(for: displayID) {
-            captureDisplayFrame = frame
+        // Even when cinematic effects start disabled, retain pointer metadata so
+        // Studio can add click-aware effects later without re-recording.
+        if captureDisplayFrame != nil, sourceShowsCursor {
             mouseActivity.start()
         }
 
@@ -143,6 +164,7 @@ final class RecordingEngine: ObservableObject {
     /// captured before this is trimmed away by the composer.
     func markContentStart() {
         contentStartAnchor = CACurrentMediaTime()
+        mouseActivity.markContentStart()
         startDate = Date()
     }
 
@@ -266,6 +288,22 @@ final class RecordingEngine: ObservableObject {
         let screenPauseSpans = usedScreen ? spans(relativeTo: screenRecorder.firstFrameAnchor) : []
         let cameraPauseSpans = usedCamera ? spans(relativeTo: camera.recordingStartAnchor) : []
 
+        // Finalize pointer activity before composition so cinematic effects can
+        // be applied to the first final.mp4, not only to a later Studio re-render.
+        var activity: MouseActivity?
+        var activityFileName: String?
+        if let captured = mouseActivity.finish(contentStartAnchor: contentStartAnchor,
+                                                pauseSpansHost: pauseSpansHost,
+                                                displayFrame: captureDisplayFrame ?? .zero) {
+            activity = captured
+            let activityURL = folder.appendingPathComponent("activity.json")
+            if let data = try? JSONEncoder().encode(captured) {
+                try? data.write(to: activityURL, options: .atomic)
+                activityFileName = "activity.json"
+                NSLog("Cue captured pointer activity: \(captured.clicks.count) clicks, \(captured.moves.count) moves")
+            }
+        }
+
         // If the recording ended with the camera toggled off, close that range.
         if let start = cameraDisableStart {
             cameraDisabledRanges.append(start...max(start, compositionNow()))
@@ -293,6 +331,9 @@ final class RecordingEngine: ObservableObject {
                 cameraHiddenRanges: cameraDisabledRanges,
                 screenPauseSpans: screenPauseSpans,
                 cameraPauseSpans: cameraPauseSpans,
+                mouseActivity: activity,
+                cinematicEffects: cinematicEffectsEnabled,
+                drawCustomCursor: !sourceShowsCursor,
                 outputURL: folder.appendingPathComponent("final.mp4")
             )
             finalName = "final.mp4"
@@ -307,20 +348,6 @@ final class RecordingEngine: ObservableObject {
             ?? screenName.map { folder.appendingPathComponent($0) }
             ?? cameraName.map { folder.appendingPathComponent($0) }
         let thumbName = await generateThumbnail(id: id, sourceURL: thumbSource)
-
-        // Capture the pointer path + clicks (display recordings) for the upcoming
-        // cinematic effects, written as a sidecar next to the raw tracks.
-        var activityFileName: String?
-        if let activity = mouseActivity.finish(contentStartAnchor: contentStartAnchor,
-                                               pauseSpansHost: pauseSpansHost,
-                                               displayFrame: captureDisplayFrame ?? .zero) {
-            let activityURL = folder.appendingPathComponent("activity.json")
-            if let data = try? JSONEncoder().encode(activity) {
-                try? data.write(to: activityURL)
-                activityFileName = "activity.json"
-                NSLog("Cue captured pointer activity: \(activity.clicks.count) clicks, \(activity.moves.count) moves")
-            }
-        }
 
         // Persist the compose inputs so the clip can be re-rendered later
         // (post-record camera reposition / cinematic effects) from the raw
@@ -340,7 +367,9 @@ final class RecordingEngine: ObservableObject {
             screenPauseSpans: screenPauseSpans,
             cameraPauseSpans: cameraPauseSpans,
             cameraPlacement: nil,
-            activityFileName: activityFileName
+            activityFileName: activityFileName,
+            cinematicEffectsEnabled: cinematicEffectsEnabled && activity != nil,
+            sourceShowsCursor: sourceShowsCursor
         )
 
         let recording = Recording(
@@ -371,6 +400,8 @@ final class RecordingEngine: ObservableObject {
         usedScreen = false
         captureDisplayFrame = nil
         captureFPS = 30
+        cinematicEffectsEnabled = true
+        sourceShowsCursor = true
     }
 
     // MARK: Helpers

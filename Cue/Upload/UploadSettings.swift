@@ -29,7 +29,7 @@ final class UploadSettings: ObservableObject {
     @Published var publicBaseURL: String { didSet { defaults.set(publicBaseURL, forKey: Key.publicBaseURL) } }
     @Published var backendBaseURL: String { didSet { defaults.set(backendBaseURL, forKey: Key.backendBaseURL) } }
     @Published var secretKey: String { didSet { Keychain.set(secretKey, for: Key.secretAccount) } }
-    /// Owner token for privileged backend actions (delete / disable links).
+    /// Owner token for privileged backend actions, including native Library AI.
     @Published var ownerToken: String { didSet { Keychain.set(ownerToken, for: Key.ownerTokenAccount) } }
 
     init() {

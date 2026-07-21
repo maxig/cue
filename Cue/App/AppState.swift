@@ -41,6 +41,25 @@ final class AppState: ObservableObject {
     @Published private(set) var state: RecordingState = .idle
     @Published private(set) var elapsed: TimeInterval = 0
 
+    enum InsightGenerationPhase: Equatable {
+        case uploading
+        case transcribing
+        case summarizing
+        case syncing
+
+        var title: String {
+            switch self {
+            case .uploading: return "Uploading privately…"
+            case .transcribing: return "Transcribing…"
+            case .summarizing: return "Summarizing…"
+            case .syncing: return "Refreshing…"
+            }
+        }
+    }
+
+    /// Per-recording AI work shown inline in the Library detail pane.
+    @Published private(set) var insightGeneration: [UUID: InsightGenerationPhase] = [:]
+
     // In-recording controls (mic mute / camera off / pause)
     @Published private(set) var isPaused = false
     @Published private(set) var micActive = true
@@ -189,7 +208,8 @@ final class AppState: ObservableObject {
                                             padding: self.preferences.screenPadding,
                                             background: self.preferences.canvasBackground,
                                             aspectMode: self.preferences.aspectMode,
-                                            fps: self.preferences.captureFPS)
+                                            fps: self.preferences.captureFPS,
+                                            cinematicEffects: self.preferences.cinematicEffectsEnabled)
                 if seconds <= 0 { self.enterRecording() }
             } catch {
                 self.errorMessage = error.localizedDescription
@@ -495,13 +515,170 @@ final class AppState: ObservableObject {
             // Links are OFF by default: uploading puts the file in the cloud, but
             // the share link stays disabled until the owner enables it.
             working.share = .disabled(url: url)
+            working.uploadBackend = uploadSettings.backend
             store.upsert(working)
             uploadProgress[recording.id] = nil
         } catch {
             working.share = .failed(reason: error.localizedDescription)
+            working.uploadBackend = nil
             store.upsert(working)
             uploadProgress[recording.id] = nil
             errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: AI insights
+
+    /// Generates and stores a transcript from the Library. A local-only
+    /// recording is uploaded to the configured Cue server first with its public
+    /// link disabled, so this never requires opening the web dashboard.
+    func generateTranscript(_ recording: Recording) async {
+        guard insightGeneration[recording.id] == nil else { return }
+        do {
+            let backend = try nativeInsightsBackend()
+            insightGeneration[recording.id] = needsCueUpload(recording) ? .uploading : .transcribing
+            defer { insightGeneration[recording.id] = nil }
+
+            let prepared = try await prepareForInsights(recording, using: backend)
+            insightGeneration[recording.id] = .transcribing
+            let result = try await backend.transcribe(recording: prepared)
+
+            var working = latestRecording(recording.id) ?? prepared
+            working.transcript = result.text
+            working.transcriptVTT = result.vtt
+            store.upsert(working)
+        } catch {
+            insightGeneration[recording.id] = nil
+            errorMessage = "Transcript generation failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Generates a summary and then syncs the server-side transcript produced
+    /// along the way, so both tabs are immediately available in the Library.
+    func generateSummary(_ recording: Recording) async {
+        guard insightGeneration[recording.id] == nil else { return }
+        do {
+            let backend = try nativeInsightsBackend()
+            insightGeneration[recording.id] = needsCueUpload(recording) ? .uploading : .summarizing
+            defer { insightGeneration[recording.id] = nil }
+
+            let prepared = try await prepareForInsights(recording, using: backend)
+            insightGeneration[recording.id] = .summarizing
+            let insight = try await backend.summarize(recording: prepared)
+            let remote = try? await backend.fetchInsights(recording: prepared)
+
+            var working = latestRecording(recording.id) ?? prepared
+            working.title = remote?.title ?? insight.title
+            working.summary = remote?.summary ?? insight.summary
+            if let transcript = remote?.transcript { working.transcript = transcript }
+            if let vtt = remote?.transcriptVTT { working.transcriptVTT = vtt }
+            store.upsert(working)
+        } catch {
+            insightGeneration[recording.id] = nil
+            errorMessage = "Summary generation failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Pulls insights that may have been generated previously on the web.
+    func refreshInsights(_ recording: Recording) async {
+        guard insightGeneration[recording.id] == nil else { return }
+        do {
+            let backend = try nativeInsightsBackend()
+            guard !needsCueUpload(recording) else {
+                throw UploadError.notConfigured("upload this recording before refreshing insights")
+            }
+            insightGeneration[recording.id] = .syncing
+            defer { insightGeneration[recording.id] = nil }
+
+            let remote = try await backend.fetchInsights(recording: recording)
+            var working = latestRecording(recording.id) ?? recording
+            working.title = remote.title
+            working.transcript = remote.transcript
+            working.transcriptVTT = remote.transcriptVTT
+            working.summary = remote.summary
+            store.upsert(working)
+        } catch {
+            insightGeneration[recording.id] = nil
+            errorMessage = "Couldn’t refresh insights: \(error.localizedDescription)"
+        }
+    }
+
+    private func nativeInsightsBackend() throws -> CueBackendUploadService {
+        guard uploadSettings.backend == .cueServer,
+              !uploadSettings.backendBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !uploadSettings.ownerToken.isEmpty,
+              let backend = uploadSettings.cueBackendService() else {
+            throw UploadError.notConfigured("choose Cue server and add its owner token in Settings")
+        }
+        return backend
+    }
+
+    private func needsCueUpload(_ recording: Recording) -> Bool {
+        recording.uploadBackend != .cueServer || recording.shareURL == nil
+    }
+
+    private func latestRecording(_ id: UUID) -> Recording? {
+        store.recordings.first { $0.id == id }
+    }
+
+    /// Renames a recording locally and mirrors the change to the Cue server when
+    /// this recording has a registered cloud copy. Local edits remain saved if a
+    /// temporarily unavailable server cannot be updated.
+    func rename(_ recording: Recording, to proposedTitle: String) async {
+        let collapsed = proposedTitle.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let title = String(collapsed.prefix(100)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else {
+            errorMessage = "A recording title can’t be empty."
+            return
+        }
+
+        var working = latestRecording(recording.id) ?? recording
+        working.title = title
+        store.upsert(working)
+
+        guard working.uploadBackend == .cueServer, working.shareURL != nil else { return }
+        guard let backend = uploadSettings.cueBackendService() else {
+            errorMessage = "The title was saved on this Mac, but Cue server is not configured to update the web copy."
+            return
+        }
+        do {
+            let remoteTitle = try await backend.updateTitle(title, recording: working)
+            working.title = remoteTitle
+            store.upsert(working)
+        } catch {
+            errorMessage = "The title was saved on this Mac, but the web copy could not be updated: \(error.localizedDescription)"
+        }
+    }
+
+    private func prepareForInsights(
+        _ recording: Recording,
+        using backend: CueBackendUploadService
+    ) async throws -> Recording {
+        if !needsCueUpload(recording) { return latestRecording(recording.id) ?? recording }
+        guard let fileURL = store.primaryMediaURL(for: recording) else {
+            throw UploadError.fileMissing
+        }
+
+        var working = latestRecording(recording.id) ?? recording
+        working.share = .uploading(progress: 0)
+        working.uploadBackend = nil
+        store.upsert(working)
+        uploadProgress[recording.id] = 0
+        defer { uploadProgress[recording.id] = nil }
+
+        do {
+            let url = try await backend.upload(recording: working, fileURL: fileURL) { [weak self] value in
+                self?.uploadProgress[recording.id] = value
+            }
+            working.share = .disabled(url: url)
+            working.uploadBackend = .cueServer
+            store.upsert(working)
+            return working
+        } catch {
+            working.share = .failed(reason: error.localizedDescription)
+            working.uploadBackend = nil
+            store.upsert(working)
+            throw error
         }
     }
 
@@ -509,7 +686,7 @@ final class AppState: ObservableObject {
     /// new camera placement (post-record reposition/resize). Needs a stored plan
     /// + a camera track. The new media is composed in a temporary folder so a
     /// failed edit cannot destroy the existing final video.
-    func recompose(_ recording: Recording, placement: CameraPlacement) async {
+    func recompose(_ recording: Recording, placement: CameraPlacement?, cinematicEffects: Bool) async {
         guard isRecomposing == nil else {
             errorMessage = "Another recording is already being re-rendered."
             return
@@ -518,14 +695,21 @@ final class AppState: ObservableObject {
             errorMessage = "This recording predates post-edit support — re-record to enable it."
             return
         }
-        guard let cameraName = recording.cameraFileName else {
-            errorMessage = "No camera track to reposition."
-            return
-        }
         let folder = store.folderURL(for: recording.id)
         let screenURL = recording.screenFileName.map { folder.appendingPathComponent($0) }
-        let cameraURL = folder.appendingPathComponent(cameraName)
-        plan.cameraPlacement = placement
+        let cameraURL = recording.cameraFileName.map { folder.appendingPathComponent($0) }
+        if let placement { plan.cameraPlacement = placement }
+        plan.cinematicEffectsEnabled = cinematicEffects
+
+        let mouseActivity: MouseActivity? = {
+            guard cinematicEffects, let name = plan.activityFileName,
+                  let data = try? Data(contentsOf: folder.appendingPathComponent(name)) else { return nil }
+            return try? JSONDecoder().decode(MouseActivity.self, from: data)
+        }()
+        if recording.cameraFileName == nil && mouseActivity == nil {
+            errorMessage = "This recording has no editable camera or pointer activity."
+            return
+        }
         let workFolder = folder.appendingPathComponent(".recompose-\(UUID().uuidString)", isDirectory: true)
 
         isRecomposing = recording.id
@@ -551,6 +735,9 @@ final class AppState: ObservableObject {
                 cameraHiddenRanges: plan.cameraHiddenRanges,
                 screenPauseSpans: plan.screenPauseSpans,
                 cameraPauseSpans: plan.cameraPauseSpans,
+                mouseActivity: mouseActivity,
+                cinematicEffects: cinematicEffects,
+                drawCustomCursor: plan.sourceShowsCursor == false,
                 outputURL: workFolder.appendingPathComponent("final.mp4")
             )
 
@@ -578,6 +765,7 @@ final class AppState: ObservableObject {
                     do {
                         try await backend.deleteRemote(recording: recording)
                         working.share = .local
+                        working.uploadBackend = nil
                     } catch {
                         cloudWarning = "The edit was saved locally, but the previous cloud copy could not be removed: \(error.localizedDescription)"
                     }
@@ -679,6 +867,7 @@ final class AppState: ObservableObject {
             try await backend.deleteRemote(recording: recording)
             var working = recording
             working.share = .local
+            working.uploadBackend = nil
             store.upsert(working)
         } catch {
             errorMessage = error.localizedDescription

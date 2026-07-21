@@ -320,6 +320,8 @@ From the app's Library (right-click a row, or the detail pane) — or from the
 - **Disable / Enable link** — flips a flag so `/v/:id` returns *"link disabled"*
   (HTTP 410) without deleting anything; reversible anytime.
 - **Remove from Cloud** — deletes the R2 objects + metadata, keeps the local file.
+- **Rename** — edits the title from either the macOS Library or private web view;
+  both update the same server metadata.
 - **Delete** — removes it everywhere (local + cloud).
 
 > Disable gates the Worker. If you serve media through an R2 **custom domain**, its
@@ -330,7 +332,7 @@ From the app's Library (right-click a row, or the detail pane) — or from the
 
 Every recording has a private management page at **`/app/v/<id>`** — the same player
 your viewers see, plus an action bar (Enable/Disable link, Transcribe, Summarize,
-Delete), the inline transcript/summary, and **comment moderation**. Open it from the
+Rename, Delete), the inline transcript/summary, and **comment moderation**. Open it from the
 [dashboard](#step-6-recommended--owner-dashboard-via-cloudflare-access) (click a
 recording's title or its **Manage** button). It plays a recording even while the
 link is disabled, so you can review before publishing.
@@ -416,6 +418,14 @@ curl -X POST -H "Authorization: Bearer <OWNER_TOKEN>" \
   of filler phrases from the stored transcript **and** its VTT, in place (no Workers AI
   / Neurons used). Re-transcribe to restore the raw text.
 
+### Summaries, names, and smart chapters
+
+**Summarize** uses one structured Workers AI response to create a concise overview,
+key points, a meaningful title (maximum eight words), and timestamped chapters from
+the stored WebVTT. Fresh date-based titles are replaced automatically; a title you
+edited yourself is preserved. Chapters appear as seek buttons in the public and owner
+players, and the generated title syncs back to the native Library.
+
 ---
 
 ## Storage cap & retention
@@ -440,6 +450,7 @@ archive.
 | `GET` | `/api/videos/:id` | **owner** | fetch one recording |
 | `DELETE` | `/api/videos/:id` | **owner** | delete R2 objects + metadata |
 | `POST` | `/api/videos/:id/disable` · `/enable` | **owner** | turn the share link off / on |
+| `POST` | `/api/videos/:id/title` | **owner** | rename a recording (`{ title }`) |
 | `POST` | `/api/videos/:id/transcribe` · `/summarize` | **owner** | transcribe / summarize (Workers AI) |
 | `POST` | `/api/videos/:id/declutter` | **owner** | strip filler words (um/uh…) from the transcript |
 | `GET` · `POST` | `/app` | **owner / Access** | private dashboard (list + Enable/Disable/Delete) |

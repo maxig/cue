@@ -31,18 +31,18 @@ Cap (and Screen Studio) won by making raw screen captures look like professional
 ### Phase 1: The Core (MVP)
 - **Menubar Controller:** Start/Stop/Pause recording, toggle webcam, select display/window.
 - **High-Performance Recording:** 4K/60fps support using macOS ScreenCaptureKit.
-- **Instant Upload:** Streaming upload to S3-compatible storage as the recording happens.
+- **Instant Sharing:** Compose on stop, then upload the finished video directly to S3-compatible storage and register a share link.
 - **Sharing Page:** A minimalist web player with a unique shareable URL.
 
 ### Phase 2: AI & Studio Polish
-- **AI Insights:** Word-level transcription, summarization, and **Filler Word Removal** (AI-detected "ums/uhs").
+- **AI Insights:** Word-level transcription, concise titles, summaries, clickable smart chapters, and **Filler Word Removal**.
 - **Studio Layouts:** Post-recording camera repositioning/resizing and **Custom Canvas Backgrounds**.
-- **Visual Refinement:** **Smooth Mouse Paths** (post-processing) and click-ripple animations.
-- **Team Workspaces:** Basic user management, shared folders, and RBAC.
+- **Visual Refinement:** **Smooth Mouse Paths**, click-ripple animations, and click-focused auto-zoom in post-processing.
 
 ### Phase 3: Advanced Automation & Collaboration
-- **Automated Cinematography:** AI-powered **Auto-Zoom on Click** and interaction-aware focus.
+- **Automated Editing:** AI-assisted trimming and interaction-aware focus beyond deterministic click cinematography.
 - **Interactive Player:** **Emoji reactions at timestamps** and threaded comments on the video timeline.
+- **Team Workspaces:** Basic user management, shared folders, and RBAC.
 - **Enterprise Library:** Global search across all team videos (indexed by transcript) and SSO/SCIM integration.
 - **Custom Branding:** White-labeled sharing pages and custom domains.
 
@@ -64,4 +64,3 @@ Cap (and Screen Studio) won by making raw screen captures look like professional
 - **Typography:** Inter or SF Pro (Native Mac feel).
 - **Accents:** Electric Blue or Deep Teal (distinguishing from Loom's Purple).
 - **Philosophy:** "Don't make me think." Minimalist controls, maximum output quality.
-

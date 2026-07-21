@@ -19,6 +19,7 @@ enum UploadError: LocalizedError {
     case notConfigured(String)
     case server(status: Int, body: String)
     case fileMissing
+    case invalidResponse(String)
 
     var errorDescription: String? {
         switch self {
@@ -26,6 +27,7 @@ enum UploadError: LocalizedError {
         case .server(let status, let body):
             return "Upload failed (HTTP \(status)). \(body.prefix(200))"
         case .fileMissing: return "The recording file is missing."
+        case .invalidResponse(let detail): return "The Cue server returned an invalid response. \(detail)"
         }
     }
 }

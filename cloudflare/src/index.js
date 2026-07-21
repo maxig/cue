@@ -73,7 +73,48 @@ function rowToVideo(row) {
     transcript: row.transcript || null,
     transcriptVtt: row.transcript_vtt || null,
     summary: row.summary || null,
+    chapters: parseStoredChapters(row.summary),
   };
+}
+
+function cleanTitle(value, maxLength = 100) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength).trim();
+}
+
+function generatedTitle(value, fallback) {
+  let title = cleanTitle(value, 60).replace(/^["'“”‘’]+|["'“”‘’.:;,-]+$/g, "").trim();
+  title = title.split(/\s+/).slice(0, 8).join(" ");
+  return title || cleanTitle(fallback, 60) || "Untitled Cue";
+}
+
+// Preserve a title the owner has already chosen. Fresh native recordings use
+// "Cue · <date>", while older clients and direct API uploads may use Untitled.
+function hasDefaultTitle(title) {
+  const value = cleanTitle(title);
+  return !value || /^Untitled Cue$/i.test(value) || /^Cue\s*[·-]/i.test(value);
+}
+
+function parseStoredChapters(summary) {
+  const marker = /(?:^|\n)Chapters:\s*\n/i;
+  const match = marker.exec(String(summary || ""));
+  if (!match) return [];
+  return String(summary).slice(match.index + match[0].length).split(/\r?\n/).map((line) => {
+    const m = /^-\s*(?:(\d+):)?(\d{1,2}):(\d{2})\s+[—-]\s+(.+)$/.exec(line.trim());
+    if (!m) return null;
+    const seconds = (Number(m[1]) || 0) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+    const title = cleanTitle(m[4], 80);
+    return title ? { startSeconds: seconds, title } : null;
+  }).filter(Boolean).slice(0, 8);
+}
+
+function formatChapterTime(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+    : `${minutes}:${String(secs).padStart(2, "0")}`;
 }
 
 function baseURL(request, env) {
@@ -298,6 +339,21 @@ export default {
         return await summarizeHTTP(decodeURIComponent(sumMatch[1]), env);
       }
 
+      // Rename one recording. Used by the native Library and kept separate from
+      // registration so a title edit never touches media metadata or link state.
+      const titleMatch = pathname.match(/^\/api\/videos\/([^/]+)\/title$/);
+      if (titleMatch && method === "POST") {
+        const denied = await ownerError(request, env);
+        if (denied) return denied;
+        const body = await request.json().catch(() => ({}));
+        const title = cleanTitle(body?.title);
+        if (!title) return json({ error: "title is required" }, { status: 400 });
+        const id = decodeURIComponent(titleMatch[1]);
+        const ok = await updateTitle(env, id, title);
+        if (!ok) return json({ error: "not found" }, { status: 404 });
+        return json({ id, title });
+      }
+
       // Remove filler words from one recording's transcript (Workers AI-free) --
       const declMatch = pathname.match(/^\/api\/videos\/([^/]+)\/declutter$/);
       if (declMatch && method === "POST") {
@@ -398,8 +454,13 @@ export default {
             const { text } = await transcribeVideo(env, row, {});
             flash = `Transcribed (${wordCount(text)} words).`;
           } else if (action === "summarize") {
-            await summarizeVideo(env, row);
-            flash = "Summary generated.";
+            const insight = await summarizeVideo(env, row);
+            flash = `Summary generated${insight.title !== row.title ? ` and named “${insight.title}”` : ""}.`;
+          } else if (action === "rename") {
+            const title = cleanTitle(form.get("title"));
+            if (!title) throw new Error("A title is required.");
+            await updateTitle(env, id, title);
+            flash = "Title updated.";
           } else if (action === "declutter") {
             await declutterVideo(env, row);
             flash = "Filler words removed.";
@@ -475,9 +536,14 @@ export default {
               const { text } = await transcribeVideo(env, row, {});
               flash = `Transcribed (${wordCount(text)} words).`;
             } else {
-              await summarizeVideo(env, row);
-              flash = "Summary generated.";
+              const insight = await summarizeVideo(env, row);
+              flash = `Summary generated${insight.title !== row.title ? ` and named “${insight.title}”` : ""}.`;
             }
+          } else if (action === "rename") {
+            const title = cleanTitle(form.get("title"));
+            if (!title) throw new Error("A title is required.");
+            const ok = await updateTitle(env, id, title);
+            flash = ok ? "Title updated." : "Recording not found.";
           } else if (action === "declutter") {
             const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
             if (!row) throw new Error("Recording not found.");
@@ -664,13 +730,74 @@ async function transcribeHTTP(id, url, env) {
 
 // --- Summary (Workers AI: Llama) --------------------------------------------
 
-// Summarize a recording. Auto-transcribes first if no transcript exists yet,
-// then asks the text model for a short overview + key points. Persists `summary`.
+const SUMMARY_SCHEMA = {
+  type: "object",
+  properties: {
+    title: { type: "string" },
+    overview: { type: "string" },
+    keyPoints: { type: "array", items: { type: "string" }, minItems: 2, maxItems: 5 },
+    chapters: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          startSeconds: { type: "number", minimum: 0 },
+          title: { type: "string" },
+        },
+        required: ["startSeconds", "title"],
+      },
+      maxItems: 8,
+    },
+  },
+  required: ["title", "overview", "keyPoints", "chapters"],
+};
+
+function structuredResponse(result) {
+  const response = result?.response;
+  if (response && typeof response === "object") return response;
+  if (typeof response !== "string") return null;
+  try { return JSON.parse(response); } catch { return null; }
+}
+
+function cleanChapters(items, durationSeconds, fallbackTitle) {
+  const duration = Math.max(0, Number(durationSeconds) || 0);
+  const chapters = (Array.isArray(items) ? items : []).map((chapter) => ({
+    startSeconds: Math.max(0, Math.round(Number(chapter?.startSeconds) || 0)),
+    title: cleanTitle(chapter?.title, 80),
+  })).filter((chapter) => chapter.title && (!duration || chapter.startSeconds < duration))
+    .sort((a, b) => a.startSeconds - b.startSeconds)
+    .filter((chapter, index, all) => index === 0 || chapter.startSeconds - all[index - 1].startSeconds >= 5)
+    .slice(0, 8);
+  if (!chapters.length || chapters[0].startSeconds > 5) {
+    chapters.unshift({ startSeconds: 0, title: cleanTitle(fallbackTitle, 80) || "Overview" });
+  } else {
+    chapters[0].startSeconds = 0;
+  }
+  return chapters;
+}
+
+function formatInsightSummary(insight) {
+  const parts = [cleanTitle(insight.overview, 900)];
+  const points = (Array.isArray(insight.keyPoints) ? insight.keyPoints : [])
+    .map((point) => cleanTitle(point, 220)).filter(Boolean).slice(0, 5);
+  if (points.length) parts.push(`Key points:\n${points.map((point) => `- ${point}`).join("\n")}`);
+  if (insight.chapters.length) {
+    parts.push(`Chapters:\n${insight.chapters.map((chapter) =>
+      `- ${formatChapterTime(chapter.startSeconds)} — ${chapter.title}`).join("\n")}`);
+  }
+  return parts.filter(Boolean).join("\n\n");
+}
+
+// Summarize a recording. Auto-transcribes first if no transcript exists, then
+// generates a concise title, overview, key points, and timestamped chapters in a
+// single structured inference. A manually chosen title is never overwritten.
 async function summarizeVideo(env, row) {
   let transcript = row.transcript;
+  let transcriptVtt = row.transcript_vtt;
   if (!transcript) {
-    const { text } = await transcribeVideo(env, row, {});
+    const { text, vtt } = await transcribeVideo(env, row, {});
     transcript = text;
+    transcriptVtt = vtt;
   }
   if (!transcript || !transcript.trim()) {
     throw new Error("nothing to summarize — no transcript (is there audio in this recording?).");
@@ -681,19 +808,37 @@ async function summarizeVideo(env, row) {
       {
         role: "system",
         content:
-          "You summarize screen-recording transcripts for a video sharing page. " +
-          "Reply in plain text: first a 2-3 sentence overview, then a blank line, then " +
-          "'Key points:' followed by 3-5 short bullets each starting with '- '. " +
-          "Be concise and factual; never invent anything that isn't in the transcript.",
+          "Create useful metadata for a screen-recording transcript. " +
+          "The title must be meaningful, specific, at most 8 words, and must not include quotes or generic labels like 'Video' or 'Recording'. " +
+          "Write a concise 2-3 sentence overview, 2-5 short key points, and 2-8 chapters. " +
+          "Chapter startSeconds must come from the supplied WebVTT timestamps; begin the first chapter at 0. " +
+          "If no timestamps are supplied, return one chapter at 0. Be factual and never invent details.",
       },
-      { role: "user", content: `Transcript:\n\n${transcript.slice(0, 12000)}` },
+      {
+        role: "user",
+        content: transcriptVtt
+          ? `Timestamped transcript (WebVTT):\n\n${transcriptVtt.slice(0, 16000)}`
+          : `Transcript:\n\n${transcript.slice(0, 12000)}`,
+      },
     ],
-    max_tokens: 512,
+    response_format: { type: "json_schema", json_schema: SUMMARY_SCHEMA },
+    max_tokens: 768,
   });
-  const summary = (result?.response || "").trim();
-  if (!summary) throw new Error("the summary model returned nothing.");
-  await env.DB.prepare("UPDATE videos SET summary = ? WHERE id = ?").bind(summary, row.id).run();
-  return summary;
+  const value = structuredResponse(result);
+  if (!value) throw new Error("the summary model returned invalid structured data.");
+
+  const suggestedTitle = generatedTitle(value.title, row.title);
+  const title = hasDefaultTitle(row.title) ? suggestedTitle : cleanTitle(row.title);
+  const chapters = cleanChapters(value.chapters, row.duration_seconds, suggestedTitle);
+  const summary = formatInsightSummary({
+    overview: value.overview,
+    keyPoints: value.keyPoints,
+    chapters,
+  });
+  if (!summary) throw new Error("the summary model returned no usable summary.");
+  await env.DB.prepare("UPDATE videos SET title = ?, summary = ? WHERE id = ?")
+    .bind(title, summary, row.id).run();
+  return { title, summary, chapters };
 }
 
 // HTTP wrapper for POST /api/videos/:id/summarize.
@@ -701,8 +846,8 @@ async function summarizeHTTP(id, env) {
   const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
   if (!row) return json({ error: "not found" }, { status: 404 });
   try {
-    const summary = await summarizeVideo(env, row);
-    return json({ id, summary });
+    const insight = await summarizeVideo(env, row);
+    return json({ id, ...insight });
   } catch (e) {
     return json({ error: String((e && e.message) || e) }, { status: 500 });
   }
@@ -772,6 +917,12 @@ async function declutterHTTP(id, env) {
 }
 
 // --- Owner actions / storage cap --------------------------------------------
+
+async function updateTitle(env, id, title) {
+  const res = await env.DB.prepare("UPDATE videos SET title = ? WHERE id = ?")
+    .bind(title, id).run();
+  return !!res.meta.changes;
+}
 
 // Flip a share link off/on. Returns false if no recording matched the id.
 async function setDisabled(env, id, disabled) {

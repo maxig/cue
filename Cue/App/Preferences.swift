@@ -75,8 +75,10 @@ enum CameraBackground: String, CaseIterable, Identifiable, Codable {
 /// Studio style). `none` keeps the screen full-bleed with no padding.
 enum CanvasBackground: String, CaseIterable, Identifiable, Codable {
     case none, graphite, midnight, ocean, sunset, lavender, mint, snow
+    case auroraVeil, desertGlass, mossStudio, lunarMesh
     var id: String { rawValue }
     var isVisible: Bool { self != .none }
+    var isArtwork: Bool { assetName != nil }
     var title: String {
         switch self {
         case .none: return "None"
@@ -87,13 +89,28 @@ enum CanvasBackground: String, CaseIterable, Identifiable, Codable {
         case .lavender: return "Lavender"
         case .mint: return "Mint"
         case .snow: return "Snow"
+        case .auroraVeil: return "Aurora Veil"
+        case .desertGlass: return "Desert Glass"
+        case .mossStudio: return "Moss Studio"
+        case .lunarMesh: return "Lunar Mesh"
         }
     }
 
-    /// Gradient stops as sRGB (top, bottom). Nil for `.none`.
+    /// Asset-catalog name for artwork backgrounds. Gradient presets return nil.
+    var assetName: String? {
+        switch self {
+        case .auroraVeil: return "CanvasAurora"
+        case .desertGlass: return "CanvasDesertGlass"
+        case .mossStudio: return "CanvasMossStudio"
+        case .lunarMesh: return "CanvasLunarMesh"
+        default: return nil
+        }
+    }
+
+    /// Gradient stops as sRGB (top, bottom). Nil for `.none` and artwork.
     var gradient: (top: (Double, Double, Double), bottom: (Double, Double, Double))? {
         switch self {
-        case .none: return nil
+        case .none, .auroraVeil, .desertGlass, .mossStudio, .lunarMesh: return nil
         case .graphite: return ((0.18, 0.19, 0.22), (0.08, 0.08, 0.10))
         case .midnight: return ((0.16, 0.18, 0.42), (0.05, 0.05, 0.16))
         case .ocean: return ((0.16, 0.55, 0.86), (0.05, 0.22, 0.45))
@@ -146,6 +163,7 @@ final class Preferences: ObservableObject {
         static let lastMode = "cue.capture.lastMode"
         static let aspectMode = "cue.canvas.aspectMode"
         static let captureFPS = "cue.capture.fps"
+        static let cinematicEffects = "cue.capture.cinematicEffects"
     }
 
     @Published var cameraBubbleShape: CameraBubbleShape {
@@ -194,6 +212,11 @@ final class Preferences: ObservableObject {
     @Published var captureFPS: Int {
         didSet { defaults.set(captureFPS, forKey: Key.captureFPS) }
     }
+    /// Draws a smoothed cursor and adds click ripples + gentle click-focused
+    /// zooms to display recordings during post-record composition.
+    @Published var cinematicEffectsEnabled: Bool {
+        didSet { defaults.set(cinematicEffectsEnabled, forKey: Key.cinematicEffects) }
+    }
     @Published var onboardingDone: Bool {
         didSet { defaults.set(onboardingDone, forKey: Key.onboardingDone) }
     }
@@ -223,6 +246,7 @@ final class Preferences: ObservableObject {
         canvasBackground = CanvasBackground(rawValue: defaults.string(forKey: Key.background) ?? "") ?? .none
         aspectMode = AspectRatioMode(rawValue: defaults.string(forKey: Key.aspectMode) ?? "") ?? .sixteenNine
         captureFPS = defaults.integer(forKey: Key.captureFPS) == 60 ? 60 : 30
+        cinematicEffectsEnabled = defaults.object(forKey: Key.cinematicEffects) as? Bool ?? true
         onboardingDone = defaults.bool(forKey: Key.onboardingDone)
         lastCameraID = defaults.string(forKey: Key.lastCameraID)
         lastMicrophoneID = defaults.string(forKey: Key.lastMicID)

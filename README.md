@@ -12,7 +12,7 @@ and keep every byte on infrastructure you control.
 ![SwiftUI](https://img.shields.io/badge/SwiftUI-+_AppKit-1575F9?logo=swift&logoColor=white)
 ![Backend](https://img.shields.io/badge/backend-self--hosted-00B8BD)
 ![Free tier](https://img.shields.io/badge/Cloudflare-free_tier-F38020?logo=cloudflare&logoColor=white)
-![Status](https://img.shields.io/badge/status-Phase_1-0A84FF)
+![Status](https://img.shields.io/badge/status-Phase_2_complete-0A84FF)
 
 </div>
 
@@ -32,9 +32,9 @@ Worker that also does AI transcription).
 - 🤖 **AI transcription** — Whisper via Workers AI on the Cloudflare backend.
 - ✨ **Liquid Glass UI** — adopts Apple's macOS 26 design language, with a tuned fallback on macOS 15.
 
-> **Status:** Phase 2 in progress — the native recording and sharing pipeline is
-> complete, and AI, Studio editing, reactions, and comments are available today.
-> Smart chapters, auto-zoom, and team features remain on the [roadmap](#-roadmap).
+> **Status:** Phase 2 complete — the native recording and sharing pipeline, AI
+> insights, meaningful auto-titles, smart chapters, and Studio editing are available
+> today. Team workspaces and advanced collaboration remain on the [roadmap](#-roadmap).
 
 ---
 
@@ -52,16 +52,19 @@ Worker that also does AI transcription).
 - Pluggable sharing via three backends — local-only, bucket-only, or the full Cue server.
 - A minimalist **web player** page per recording, with a unique share URL.
 - **Owner controls**: enable/disable a link, remove from cloud, or delete everywhere.
-- **AI transcription and summaries** (Cloudflare backend), with clickable timestamped transcripts,
-  owner-dashboard transcript search, and transcript-level filler-word removal.
+- **AI transcription, concise auto-titles, summaries, and clickable smart chapters**
+  (Cloudflare backend), plus timestamped transcripts, owner-dashboard search, and
+  transcript-level filler-word removal.
+- Editable video titles from both the native Library and private web dashboard.
+- Cinematic display-recording effects: a smoothed cursor, click ripples, and eased
+  auto-zoom on clicks, with reversible post-record Studio controls.
 - Timestamped emoji reactions and threaded viewer comments in the web player.
 - Secrets (S3 keys, owner token) live in the **macOS Keychain**, never on disk in clear.
 
 **On the roadmap** → see [`docs/PRODUCT.md`](docs/PRODUCT.md)
 
-- Smart chapters and AI-assisted editing.
-- Studio auto-zoom and click effects (pointer/click capture metadata is already retained).
 - Team workspaces, shared libraries, SSO.
+- AI-assisted trimming and automated editing beyond the current click-aware effects.
 
 ---
 
@@ -216,7 +219,7 @@ docs/                # product spec, research, design notes
 | Phase | Focus |
 | --- | --- |
 | **1 — Core** *(complete)* | Menubar capture, compositing, self-hosted sharing, web player, transcription |
-| **2 — AI & Studio** *(in progress)* | Delivered: summaries, filler removal, camera repositioning, canvas backgrounds. Next: smart chapters and auto-zoom |
+| **2 — AI & Studio** *(complete)* | Auto-titles, summaries, smart chapters, filler removal, camera repositioning, canvas backgrounds, cursor smoothing, click ripples, and auto-zoom |
 | **3 — Collaboration** *(in progress)* | Delivered: timestamped reactions and comments. Next: team workspaces, global search, SSO |
 
 Full detail in [`docs/PRODUCT.md`](docs/PRODUCT.md).
