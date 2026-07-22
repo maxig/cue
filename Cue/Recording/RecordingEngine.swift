@@ -99,6 +99,23 @@ final class RecordingEngine: ObservableObject {
         self.cameraDisableStart = nil
         self.cameraIsOn = true
 
+        let wantsCamera = config.mode == .cameraOnly
+            || (config.cameraEnabled && config.camera?.isNone == false && config.camera != nil)
+        do {
+            try store.beginRecoveryJournal(RecordingRecoveryManifest(
+                id: id,
+                title: Self.defaultTitle(),
+                createdAt: .now,
+                captureMode: config.mode,
+                expectsScreen: config.mode != .cameraOnly,
+                expectsCamera: wantsCamera && config.camera?.isNone == false
+            ))
+        } catch {
+            try? FileManager.default.removeItem(at: folder)
+            reset()
+            throw error
+        }
+
         captureDisplayFrame = nil
         if config.mode != .window, config.mode != .cameraOnly,
            let displayID = config.display?.scDisplay.displayID,
@@ -119,6 +136,7 @@ final class RecordingEngine: ObservableObject {
         if config.mode != .cameraOnly {
             guard let (width, height, filter) = await makeFilterAndSize(config: config) else {
                 mouseActivity.cancel()
+                try? FileManager.default.removeItem(at: folder)
                 reset()
                 throw RecordingError.noCaptureTarget
             }
@@ -137,6 +155,7 @@ final class RecordingEngine: ObservableObject {
                 try await screenRecorder.start(options: options)
             } catch {
                 mouseActivity.cancel()
+                try? FileManager.default.removeItem(at: folder)
                 reset()
                 throw error
             }
@@ -144,8 +163,6 @@ final class RecordingEngine: ObservableObject {
         }
 
         // Camera track (session/preview already started by AppState)
-        let wantsCamera = config.mode == .cameraOnly
-            || (config.cameraEnabled && config.camera?.isNone == false && config.camera != nil)
         if wantsCamera, config.camera?.isNone == false {
             camera.beginRecording(to: folder.appendingPathComponent("camera.mov"))
             usedCamera = true
@@ -249,8 +266,14 @@ final class RecordingEngine: ObservableObject {
         // Raw tracks are on disk now; nothing below needs the live camera/screen.
         onCaptureFinished()
 
-        let duration = Date().timeIntervalSince(start)
-        let cameraName = usedCamera ? "camera.mov" : nil
+        let elapsedDuration = Date().timeIntervalSince(start)
+        let duration = contentStartAnchor == nil ? elapsedDuration : compositionNow()
+        let cameraCandidate = folder.appendingPathComponent("camera.mov")
+        let cameraName = usedCamera && Self.isUsableMedia(cameraCandidate) ? "camera.mov" : nil
+        if let candidateName = screenName,
+           !Self.isUsableMedia(folder.appendingPathComponent(candidateName)) {
+            screenName = nil
+        }
 
         // How long after the screen/audio did the camera actually start? Used to
         // place the camera PiP at the right spot in the timeline.
@@ -387,7 +410,9 @@ final class RecordingEngine: ObservableObject {
             share: .local,
             plan: plan
         )
-        store.upsert(recording)
+        if store.upsert(recording) {
+            store.finishRecoveryJournal(for: id)
+        }
         reset()
         return recording
     }
@@ -506,5 +531,10 @@ final class RecordingEngine: ObservableObject {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d, h:mm a"
         return "Cue · \(formatter.string(from: Date()))"
+    }
+
+    private static func isUsableMedia(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]) else { return false }
+        return values.isRegularFile == true && (values.fileSize ?? 0) > 1_024
     }
 }

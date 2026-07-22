@@ -83,6 +83,9 @@ final class AppState: ObservableObject {
 
     private var elapsedTimer: Timer?
     private var countdownTask: Task<Void, Never>?
+    private var captureStartTask: Task<Void, Never>?
+    private var captureReady = false
+    private var countdownFinished = false
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -108,7 +111,10 @@ final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
-        Task { @MainActor [weak self] in await self?.syncLibrary() }
+        Task { @MainActor [weak self] in
+            await self?.resumeInterruptedUploads()
+            await self?.syncLibrary()
+        }
     }
 
     // MARK: Derived state
@@ -204,6 +210,8 @@ final class AppState: ObservableObject {
         overlay.show(appState: self)
 
         let seconds = config.countdownSeconds
+        captureReady = false
+        countdownFinished = seconds <= 0
         state = seconds > 0 ? .countdown(seconds) : .recording
 
         // Begin capturing IMMEDIATELY — both the screen and the camera roll
@@ -211,7 +219,7 @@ final class AppState: ObservableObject {
         // before the content begins. The countdown lead-in is trimmed off in the
         // composer (`markContentStart`), so the final clip starts cleanly with
         // both streams already present and in sync — no camera "gap" at the head.
-        Task { [weak self] in
+        captureStartTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try await self.engine.start(config: self.config,
@@ -224,8 +232,11 @@ final class AppState: ObservableObject {
                                             aspectMode: self.preferences.aspectMode,
                                             fps: self.preferences.captureFPS,
                                             cinematicEffects: self.preferences.cinematicEffectsEnabled)
-                if seconds <= 0 { self.enterRecording() }
+                self.captureStartTask = nil
+                self.captureReady = true
+                self.enterRecordingIfReady()
             } catch {
+                self.captureStartTask = nil
                 self.errorMessage = error.localizedDescription
                 self.state = .idle
                 self.overlay.hide()
@@ -241,9 +252,15 @@ final class AppState: ObservableObject {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     if Task.isCancelled { return }
                 }
-                self.enterRecording()
+                self.countdownFinished = true
+                self.enterRecordingIfReady()
             }
         }
+    }
+
+    private func enterRecordingIfReady() {
+        guard captureReady, countdownFinished else { return }
+        enterRecording()
     }
 
     /// The countdown has elapsed — mark "content start" (the trim point) and flip
@@ -290,10 +307,19 @@ final class AppState: ObservableObject {
         cameraBubble.setHidden(!cameraActive)
     }
 
-    func stop() async {
+    func stop(shareAfter: Bool = true) async {
         countdownTask?.cancel()
         countdownTask = nil
         stopElapsedTimer()
+
+        // `RecordingEngine.start` crosses async ScreenCaptureKit boundaries.
+        // Let that setup settle before stop/cancel touches the same writers so a
+        // very fast Stop or Quit cannot interleave teardown with initialization.
+        if let startTask = captureStartTask {
+            startTask.cancel()
+            await startTask.value
+            captureStartTask = nil
+        }
 
         switch state {
         case .recording:
@@ -315,7 +341,7 @@ final class AppState: ObservableObject {
             state = .idle
             if let recording {
                 justFinished = recording
-                await share(recording)
+                if shareAfter { await share(recording) }
             }
         case .countdown:
             // Capture is already rolling during the countdown — discard it.
@@ -330,13 +356,20 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Gives active capture/composition a chance to finish before the process
+    /// exits. Uploads are independently checkpointed and can resume next launch,
+    /// so quitting never waits on the network.
+    func prepareForTermination() async {
+        if isRecording || isCountingDown {
+            await stop(shareAfter: false)
+        }
+        while state == .processing {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+    }
+
     func cancelCountdown() {
-        countdownTask?.cancel()
-        countdownTask = nil
-        state = .idle
-        Task { await engine.cancel() }
-        overlay.hide()
-        teardownCamera()
+        Task { await stop(shareAfter: false) }
     }
 
     // MARK: Live preview (camera + capture region shown while the popover is open)
@@ -510,34 +543,68 @@ final class AppState: ObservableObject {
 
     // MARK: Sharing
 
-    func share(_ recording: Recording) async {
+    func share(_ recording: Recording, using backend: UploadBackend? = nil) async {
+        guard uploadProgress[recording.id] == nil else { return }
         guard let fileURL = store.primaryMediaURL(for: recording) else {
             errorMessage = "Recording file is missing."
             return
         }
-        let service = uploadSettings.makeService()
+        let selectedBackend = backend ?? uploadSettings.backend
+        let service = uploadSettings.makeService(for: selectedBackend)
 
-        var working = recording
+        var working = latestRecording(recording.id) ?? recording
         working.share = .uploading(progress: 0)
-        store.upsert(working)
+        working.uploadBackend = selectedBackend
+        guard store.upsert(working) else {
+            errorMessage = "The upload was not started because Cue could not save its recovery state."
+            return
+        }
         uploadProgress[recording.id] = 0
 
         do {
-            let url = try await service.upload(recording: recording, fileURL: fileURL) { [weak self] value in
+            if let earlyURL = try await service.prepare(recording: working, fileURL: fileURL) {
+                working.preparedShareURL = earlyURL
+                store.upsert(working)
+                lastShareURL = earlyURL
+                copyLink(earlyURL.absoluteString)
+            }
+            let url = try await service.upload(recording: working, fileURL: fileURL) { [weak self] value in
                 self?.uploadProgress[recording.id] = value
             }
-            // Links are OFF by default: uploading puts the file in the cloud, but
-            // the share link stays disabled until the owner enables it.
-            working.share = .disabled(url: url)
-            working.uploadBackend = uploadSettings.backend
-            store.upsert(working)
+            working.preparedShareURL = nil
+            working.share = service.linksArePublicOnUpload ? .shared(url: url) : .disabled(url: url)
+            working.uploadBackend = selectedBackend
+            guard store.upsert(working) else {
+                // Leave the durable `.uploading` state and object-completion
+                // receipt intact. Relaunch can finalize metadata without sending
+                // the media again once the Library index is writable.
+                uploadProgress[recording.id] = nil
+                errorMessage = "The recording was uploaded, but Cue could not save the completed state. It will retry safely next launch."
+                return
+            }
+            service.confirmUploadPersisted(recording: working, fileURL: fileURL)
             uploadProgress[recording.id] = nil
+            lastShareURL = url
+            if service.linksArePublicOnUpload { copyLink(url.absoluteString) }
         } catch {
             working.share = .failed(reason: error.localizedDescription)
-            working.uploadBackend = nil
+            working.uploadBackend = selectedBackend
             store.upsert(working)
             uploadProgress[recording.id] = nil
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// A process exit can interrupt an async URLSession without executing its
+    /// catch block, leaving a truthful `.uploading` marker in the atomic index.
+    /// Retry those entries on launch; multipart checkpoints skip completed parts.
+    private func resumeInterruptedUploads() async {
+        let interrupted = store.recordings.filter {
+            if case .uploading = $0.share { return true }
+            return false
+        }
+        for recording in interrupted {
+            await share(recording, using: recording.uploadBackend)
         }
     }
 
@@ -724,7 +791,21 @@ final class AppState: ObservableObject {
         }
 
         if let url = remote.shareURL {
-            working.share = (remote.disabled ?? false) ? .disabled(url: url) : .shared(url: url)
+            switch remote.uploadStatus {
+            case "uploading":
+                working.preparedShareURL = url
+                working.share = .uploading(progress: uploadProgress[local.id] ?? 0)
+                working.uploadBackend = .cueServer
+                return working
+            case "failed":
+                working.preparedShareURL = url
+                working.share = .failed(reason: "The previous upload did not finish.")
+                working.uploadBackend = .cueServer
+                return working
+            default:
+                working.preparedShareURL = nil
+                working.share = (remote.disabled ?? false) ? .disabled(url: url) : .shared(url: url)
+            }
         }
         working.uploadBackend = .cueServer
         return working
@@ -786,8 +867,10 @@ final class AppState: ObservableObject {
 
         var working = latestRecording(recording.id) ?? recording
         working.share = .uploading(progress: 0)
-        working.uploadBackend = nil
-        store.upsert(working)
+        working.uploadBackend = .cueServer
+        guard store.upsert(working) else {
+            throw UploadError.invalidUploadState("Cue could not save the private upload recovery state.")
+        }
         uploadProgress[recording.id] = 0
         defer { uploadProgress[recording.id] = nil }
 
@@ -795,13 +878,17 @@ final class AppState: ObservableObject {
             let url = try await backend.upload(recording: working, fileURL: fileURL) { [weak self] value in
                 self?.uploadProgress[recording.id] = value
             }
+            working.preparedShareURL = nil
             working.share = .disabled(url: url)
             working.uploadBackend = .cueServer
-            store.upsert(working)
+            guard store.upsert(working) else {
+                throw UploadError.invalidUploadState("The upload finished, but Cue could not save its completed state.")
+            }
+            backend.confirmUploadPersisted(recording: working, fileURL: fileURL)
             return working
         } catch {
             working.share = .failed(reason: error.localizedDescription)
-            working.uploadBackend = nil
+            working.uploadBackend = .cueServer
             store.upsert(working)
             throw error
         }
@@ -975,11 +1062,25 @@ final class AppState: ObservableObject {
     }
 
     func delete(_ recording: Recording) {
+        do {
+            // Keep local deletion recoverable. The Finder Trash is emptied only
+            // when the user explicitly chooses to do so.
+            try store.delete(recording)
+        } catch {
+            errorMessage = "Couldn’t move the recording to Trash: \(error.localizedDescription)"
+            return
+        }
         // Remove the cloud copy too, if shared, so no dangling link/object remains.
         if recording.shareURL != nil, let backend = uploadSettings.cueBackendService() {
-            Task { try? await backend.deleteRemote(recording: recording) }
+            Task {
+                do { try await backend.deleteRemote(recording: recording) }
+                catch {
+                    await MainActor.run {
+                        self.errorMessage = "The local recording is in Trash, but the cloud copy could not be removed: \(error.localizedDescription)"
+                    }
+                }
+            }
         }
-        store.delete(recording)
     }
 
     /// Owner: remove the cloud copy but keep the local recording so it can be

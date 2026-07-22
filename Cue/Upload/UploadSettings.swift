@@ -55,9 +55,11 @@ final class UploadSettings: ObservableObject {
         )
     }
 
-    /// Builds the upload service matching the current backend selection.
-    func makeService() -> UploadService {
-        switch backend {
+    /// Builds the upload service matching the requested backend. Supplying the
+    /// persisted backend lets an interrupted upload resume to the same target
+    /// even if the user's current selection changed after the interruption.
+    func makeService(for requestedBackend: UploadBackend? = nil) -> UploadService {
+        switch requestedBackend ?? backend {
         case .localStub:
             return LocalStubUploadService()
         case .minio:
@@ -65,7 +67,8 @@ final class UploadSettings: ObservableObject {
         case .cueServer:
             return CueBackendUploadService(minioConfig: minioConfig,
                                            backendBaseURL: backendBaseURL,
-                                           ownerToken: ownerToken)
+                                           ownerToken: ownerToken,
+                                           publishOnUpload: true)
         }
     }
 

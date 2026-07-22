@@ -42,6 +42,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
 
     private var sessionStarted = false
     private var audioTrackCount = 0
+    private var didReportWriterError = false
 
     /// Host-clock time (CACurrentMediaTime) of the first written video frame,
     /// used to align the separately-recorded camera track.
@@ -78,6 +79,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         pauseAnchorPTS = nil
         totalPausedDuration = .zero
         micMuted = false
+        didReportWriterError = false
         lastVideoBuffer = nil
         lastVideoFormat = nil
         lastVideoPTS = .invalid
@@ -89,6 +91,11 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         let url = options.outputFolder.appendingPathComponent("screen.mov")
         try? FileManager.default.removeItem(at: url)
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        // Periodic QuickTime fragments keep all completed fragments playable if
+        // Cue or macOS exits before finishWriting can write the final sample table.
+        // Flush the first one quickly, then favor efficient ten-second fragments.
+        writer.initialMovieFragmentInterval = CMTime(seconds: 1, preferredTimescale: 600)
+        writer.movieFragmentInterval = CMTime(seconds: 10, preferredTimescale: 600)
 
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264,
@@ -114,7 +121,9 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
             if writer.canAdd(input) { writer.add(input); micAudioInput = input; audioTrackCount += 1 }
         }
 
-        writer.startWriting()
+        guard writer.startWriting() else {
+            throw writer.error ?? RecordingError.writerSetupFailed
+        }
         self.writer = writer
         self.videoInput = videoInput
 
@@ -137,16 +146,23 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         }
 
         let stream = SCStream(filter: options.filter, configuration: config, delegate: self)
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
-        if options.captureSystemAudio {
-            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
+        do {
+            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+            if options.captureSystemAudio {
+                try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
+            }
+            if options.captureMicrophone {
+                try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: queue)
+            }
+            self.stream = stream
+            try await stream.startCapture()
+            startKeepAlive()
+        } catch {
+            writer.cancelWriting()
+            self.stream = nil
+            cleanup()
+            throw error
         }
-        if options.captureMicrophone {
-            try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: queue)
-        }
-        self.stream = stream
-        try await stream.startCapture()
-        startKeepAlive()
     }
 
     private func makeAudioInput() -> AVAssetWriterInput {
@@ -215,7 +231,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
             makeDataReadyCallback: nil, refcon: nil, formatDescription: format,
             sampleTiming: &timing, sampleBufferOut: &sample)
         guard status == noErr, let sample else { return }
-        input.append(sample)
+        if !input.append(sample) { reportWriterFailure() }
         lastVideoPTS = pts
         lastVideoHostTime = now
     }
@@ -397,7 +413,10 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
            let bumped = Self.retimed(sampleBuffer, by: pts - (lastVideoPTS + frameDuration)) {
             toAppend = bumped
         }
-        input.append(toAppend)
+        if !input.append(toAppend) {
+            reportWriterFailure()
+            return
+        }
 
         // Remember this frame so the keep-alive timer can re-emit it if the
         // screen goes static and SCK stops delivering frames.
@@ -413,7 +432,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         guard sessionStarted,
               let writer = writer, writer.status == .writing,
               let input, input.isReadyForMoreMediaData else { return }
-        input.append(sampleBuffer)
+        if !input.append(sampleBuffer) { reportWriterFailure() }
     }
 
     private func isCompleteFrame(_ sampleBuffer: CMSampleBuffer) -> Bool {
@@ -427,8 +446,17 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
 
     private func estimatedBitrate(width: Int, height: Int, fps: Int) -> Int {
         let pixels = Double(width * height)
-        let bitrate = pixels * Double(fps) * 0.1
-        return Int(min(max(bitrate, 4_000_000), 40_000_000))
+        // Screen content compresses substantially better than camera footage.
+        // The old 40 Mbps ceiling made a ten-minute 4K recording approach 3 GB,
+        // dominating composition and upload time with little visible improvement.
+        let bitrate = pixels * Double(fps) * 0.05
+        return Int(min(max(bitrate, 3_000_000), 24_000_000))
+    }
+
+    private func reportWriterFailure() {
+        guard !didReportWriterError else { return }
+        didReportWriterError = true
+        onStreamError?(writer?.error ?? RecordingError.compositionFailed("the screen encoder stopped accepting media"))
     }
 }
 

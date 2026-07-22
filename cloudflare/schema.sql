@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS videos (
   height           INTEGER NOT NULL DEFAULT 0,
   capture_mode     TEXT    NOT NULL DEFAULT 'screen',
   created_at       TEXT    NOT NULL,
+  upload_status    TEXT    NOT NULL DEFAULT 'ready', -- uploading | ready | failed
+  upload_updated_at TEXT   NOT NULL DEFAULT '',
   disabled         INTEGER NOT NULL DEFAULT 1,   -- share link OFF by default; owner enables it
   transcript       TEXT,             -- plain text, populated on demand by Whisper
   transcript_vtt   TEXT,             -- WebVTT with segment timing, optional

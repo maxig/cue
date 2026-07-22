@@ -112,6 +112,32 @@ const BASE_CSS = `
   footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 28px; }
 `;
 
+const SITE_CSS = `
+  .site { max-width: 900px; margin: 0 auto; padding: 28px 24px 56px; }
+  .site .topbar { margin-bottom: 64px; }
+  .site .brand { color: var(--text); }
+  .github { color: var(--text); border: 1px solid var(--panel-border); background: var(--panel);
+            border-radius: 999px; padding: 7px 12px; font-size: 13px; }
+  .hero { max-width: 730px; text-align: center; margin: 0 auto; }
+  .hero h1 { font-size: clamp(42px, 8vw, 72px); letter-spacing: -.05em; line-height: 1; margin: 0 0 20px; }
+  .hero p { color: var(--muted); font-size: 19px; margin: 0 auto; max-width: 640px; }
+  .ctas { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin: 32px 0 64px; }
+  .cta { color: #fff; font-weight: 700; border-radius: 14px; padding: 13px 20px; background: var(--accent); }
+  .cta.secondary { color: var(--text); background: var(--panel); border: 1px solid var(--panel-border); }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .step { padding: 20px; }
+  .step b { color: var(--accent); }
+  .step h2 { font-size: 16px; margin: 12px 0 5px; }
+  .step p { color: var(--muted); font-size: 13px; margin: 0; }
+  .contribute { margin-top: 14px; padding: 22px; text-align: center; color: var(--muted); }
+  .waiting { max-width: 580px; margin: 80px auto; padding: 44px 30px; text-align: center; }
+  .waiting p { color: var(--muted); }
+  .spinner { width: 42px; height: 42px; margin: 0 auto 22px; border-radius: 50%; border: 3px solid rgba(255,255,255,.12);
+             border-top-color: var(--accent); animation: spin .9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (max-width: 700px) { .steps { grid-template-columns: 1fr; } }
+`;
+
 export function renderPlayer(v, { editable = false } = {}) {
   const share = esc(v.shareURL);
   const media = esc(v.mediaURL);
@@ -179,6 +205,52 @@ export function renderPlayer(v, { editable = false } = {}) {
   }
 </script>
 </body></html>`;
+}
+
+export function renderLanding() {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Cue is an open-source native macOS screen recorder with self-hosted sharing." />
+  <title>Cue · Native screen recording for macOS</title><style>${BASE_CSS}${SITE_CSS}</style></head><body>
+  <div class="site"><div class="topbar"><a class="brand" href="/"><div class="logo"></div> Cue</a><div class="spacer"></div>
+  <a class="github" href="https://github.com/maxig/cue" target="_blank" rel="noopener">⌘ Open source · GitHub ↗</a></div>
+  <main><section class="hero"><h1>Record your Mac.<br />Share in a moment.</h1>
+  <p>A lightweight, open-source Loom alternative that keeps recordings on your Mac and storage you control.</p>
+  <div class="ctas"><a class="cta" href="/download">↓ Download Cue for macOS</a>
+  <a class="cta secondary" href="https://github.com/maxig/cue" target="_blank" rel="noopener">View source</a></div></section>
+  <section class="steps"><article class="card step"><b>1</b><h2>Download the DMG</h2><p>Get the latest signed build directly from GitHub.</p></article>
+  <article class="card step"><b>2</b><h2>Move it to Applications</h2><p>Open the disk image and drag Cue to Applications.</p></article>
+  <article class="card step"><b>3</b><h2>Grant capture access</h2><p>Screen Recording is required. Camera and microphone are optional.</p></article></section>
+  <section class="card contribute">Want to help? <a href="https://github.com/maxig/cue#contributing" target="_blank" rel="noopener">Report an issue or contribute on GitHub ↗</a></section></main>
+  <footer>MIT licensed · recordings stay yours</footer></div></body></html>`;
+}
+
+export function renderUploading(v) {
+  const id = JSON.stringify(String(v.id)).replace(/</g, "\\u003c");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" />
+  <title>Uploading ${esc(v.title)} · Cue</title><style>${BASE_CSS}${SITE_CSS}</style></head><body><div class="wrap">
+  <div class="topbar"><a class="brand" href="/"><div class="logo"></div> Cue</a></div>
+  <main class="card waiting"><div class="spinner"></div><h1>Your recording is on its way</h1>
+  <p id="msg">${esc(v.title)} is still uploading. This page will be ready automatically.</p></main></div>
+  <script>const id=${id};async function check(){try{const r=await fetch('/api/public/videos/'+encodeURIComponent(id)+'/status',{cache:'no-store'});if(r.ok){const s=await r.json();if(s.disabled||s.status==='ready'){location.reload();return;}if(s.status==='failed'){document.querySelector('.spinner').style.display='none';document.getElementById('msg').textContent='The upload paused. The owner can resume it from Cue.';return;}}}catch(e){}setTimeout(check,2000)}setTimeout(check,1200)</script>
+  </body></html>`;
+}
+
+export function renderUploadFailed(v) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" />
+  <title>Upload paused · Cue</title><style>${BASE_CSS}${SITE_CSS}</style></head><body><div class="wrap">
+  <div class="topbar"><a class="brand" href="/"><div class="logo"></div> Cue</a></div>
+  <main class="card waiting"><h1>Upload paused</h1><p>${esc(v.title)} is safe on the owner's Mac. They can resume this upload from Cue.</p></main>
+  </div></body></html>`;
+}
+
+export function renderDisabled() {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Link disabled · Cue</title><style>${BASE_CSS}</style></head><body><div class="wrap">
+  <div class="topbar"><a class="brand" href="/"><div class="logo"></div> Cue</a></div>
+  <div class="empty">This share link has been disabled by its owner.</div></div></body></html>`;
 }
 
 export function renderIndex(videos, { notFound } = {}) {

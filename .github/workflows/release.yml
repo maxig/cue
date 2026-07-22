@@ -222,6 +222,10 @@ jobs:
           xcrun stapler validate "$DMG_PATH"
           spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
 
+          # Stable asset name used by the website's one-click /download route.
+          # Keep the versioned copy for humans and release history.
+          cp "$DMG_PATH" "$(dirname "$DMG_PATH")/Cue.dmg"
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -233,6 +237,7 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" \
             "$DIST_PATH/Cue-${VERSION}.dmg" \
+            "$DIST_PATH/Cue.dmg" \
             "$DIST_PATH/Cue-${VERSION}.zip" \
             "$DIST_PATH/appcast.xml" \
             --verify-tag \
@@ -240,7 +245,7 @@ jobs:
             --notes-file "$NOTES_PATH"
 
           echo "### Published Cue $VERSION" >> "$GITHUB_STEP_SUMMARY"
-          echo "The DMG, Sparkle ZIP, and appcast are attached to $RELEASE_TAG." \
+          echo "The versioned/stable DMGs, Sparkle ZIP, and appcast are attached to $RELEASE_TAG." \
             >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove temporary keychain

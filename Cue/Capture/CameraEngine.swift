@@ -197,6 +197,11 @@ final class CameraEngine: NSObject, AVCaptureFileOutputRecordingDelegate,
             guard let self, self.session.isRunning, !self.movieOutput.isRecording else { return }
             self.recordingStartAnchor = nil
             try? FileManager.default.removeItem(at: url)
+            // AVCaptureMovieFileOutput uses movie fragments to keep a partially
+            // written QuickTime file playable after a crash. A short interval is
+            // worthwhile on the internal disk and limits camera-only loss to the
+            // most recent couple of seconds.
+            self.movieOutput.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
             self.movieOutput.startRecording(to: url, recordingDelegate: self)
         }
     }

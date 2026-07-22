@@ -10,7 +10,10 @@
 // this Worker never receives the bytes, it only registers metadata and serves
 // the player page + (optionally) streams the object back.
 
-import { renderPlayer, renderIndex, renderDisabled, renderLanding, renderApp, renderAppLocked } from "./views.js";
+import {
+  renderPlayer, renderIndex, renderDisabled, renderLanding, renderUploading,
+  renderUploadFailed, renderApp, renderAppLocked,
+} from "./views.js";
 import { AwsClient } from "aws4fetch";
 import { jwtVerify, createRemoteJWKSet } from "jose";
 
@@ -18,6 +21,13 @@ const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+const SECURITY_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "permissions-policy": "camera=(), microphone=(), geolocation=()",
+  "content-security-policy": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: https:; media-src 'self' blob: http: https:",
 };
 
 // Largest object we'll pull fully into the Worker for in-line transcription.
@@ -45,14 +55,20 @@ const NO_STORE = { "cache-control": "no-store" };
 function json(data, init = {}) {
   return new Response(JSON.stringify(data), {
     status: init.status || 200,
-    headers: { "content-type": "application/json; charset=utf-8", ...CORS, ...(init.headers || {}) },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      ...CORS,
+      ...SECURITY_HEADERS,
+      ...(init.headers || {}),
+    },
   });
 }
 
-function html(markup, status = 200) {
+function html(markup, status = 200, extraHeaders = {}) {
   return new Response(markup, {
     status,
-    headers: { "content-type": "text/html; charset=utf-8", ...CORS },
+    headers: { "content-type": "text/html; charset=utf-8", ...CORS, ...SECURITY_HEADERS, ...extraHeaders },
   });
 }
 
@@ -69,6 +85,8 @@ function rowToVideo(row) {
     height: row.height,
     captureMode: row.capture_mode,
     createdAt: row.created_at,
+    uploadStatus: row.upload_status || "ready",
+    uploadUpdatedAt: row.upload_updated_at || row.created_at,
     disabled: !!row.disabled,
     transcript: row.transcript || null,
     transcriptVtt: row.transcript_vtt || null,
@@ -288,17 +306,22 @@ export default {
         if (!id || !objectKey) return json({ error: "id and objectKey are required" }, { status: 400 });
         const created = normalizedTimestamp(createdAt, new Date().toISOString());
         const titleUpdatedAt = normalizedTimestamp(body?.titleUpdatedAt, created);
+        const uploadStatus = ["uploading", "ready", "failed"].includes(body?.uploadStatus)
+          ? body.uploadStatus : "ready";
+        const uploadUpdatedAt = new Date().toISOString();
+        const disabled = body?.disabled === false ? 0 : 1;
 
         await env.DB.prepare(
-          `INSERT INTO videos (id, title, duration_seconds, object_key, audio_key, bytes, width, height, capture_mode, created_at, disabled, title_updated_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11)
+          `INSERT INTO videos (id, title, duration_seconds, object_key, audio_key, bytes, width, height, capture_mode, created_at, upload_status, upload_updated_at, disabled, title_updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
            ON CONFLICT(id) DO UPDATE SET
              title=CASE WHEN excluded.title_updated_at >= COALESCE(videos.title_updated_at, videos.created_at, '') THEN excluded.title ELSE videos.title END,
              title_updated_at=CASE WHEN excluded.title_updated_at >= COALESCE(videos.title_updated_at, videos.created_at, '') THEN excluded.title_updated_at ELSE videos.title_updated_at END,
              duration_seconds=excluded.duration_seconds,
              object_key=excluded.object_key, audio_key=excluded.audio_key, bytes=excluded.bytes,
              width=excluded.width, height=excluded.height,
-             capture_mode=excluded.capture_mode, created_at=excluded.created_at, disabled=1`
+             capture_mode=excluded.capture_mode, created_at=excluded.created_at,
+             upload_status=excluded.upload_status, upload_updated_at=excluded.upload_updated_at`
         ).bind(
           id,
           title || "Untitled Cue",
@@ -310,12 +333,15 @@ export default {
           Number(height) || 0,
           captureMode || "screen",
           created,
+          uploadStatus,
+          uploadUpdatedAt,
+          disabled,
           titleUpdatedAt
         ).run();
 
         // Evict oldest recordings from R2 if this upload pushed usage over the
         // cap. Local copies remain in the app library and can be re-uploaded.
-        await enforceStorageCap(env, id);
+        if (uploadStatus === "ready") await enforceStorageCap(env, id);
 
         return json({ id, url: `${baseURL(request, env)}/v/${id}` });
       }
@@ -478,6 +504,8 @@ export default {
         const id = decodeURIComponent(appVideoMatch[1]);
         const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(id).first();
         if (!row) return html(renderAppLocked("Recording not found."), 404);
+        if (row.upload_status === "uploading") return html(renderUploading(rowToVideo(row)), 200, NO_STORE);
+        if (row.upload_status === "failed") return html(renderUploadFailed(rowToVideo(row)), 503, NO_STORE);
         const v = rowToVideo(row);
         const dv = decorate(request, env, v);
         dv.mediaURL = await ownerMediaURL(request, env, v); // plays even while disabled
@@ -650,13 +678,27 @@ export default {
         return await handleEngagement(decodeURIComponent(engageMatch[1]), url, request, env);
       }
 
+      // Capability-safe upload state used by the early share page. It exposes no
+      // object key, media URL, transcript, or owner metadata.
+      const statusMatch = pathname.match(/^\/api\/public\/videos\/([^/]+)\/status$/);
+      if (statusMatch && method === "GET") {
+        const id = decodeURIComponent(statusMatch[1]);
+        const row = await env.DB.prepare(
+          "SELECT upload_status, disabled FROM videos WHERE id = ?"
+        ).bind(id).first();
+        if (!row) return json({ error: "not found" }, { status: 404, headers: NO_STORE });
+        return json({ status: row.upload_status || "ready", disabled: !!row.disabled }, { headers: NO_STORE });
+      }
+
       // Web player page ---------------------------------------------------
       const vMatch = pathname.match(/^\/v\/([^/]+)$/);
       if (vMatch && method === "GET") {
         const sid = decodeURIComponent(vMatch[1]);
         const row = await env.DB.prepare("SELECT * FROM videos WHERE id = ?").bind(sid).first();
         if (!row) return html(renderIndex([], { notFound: sid }), 404);
-        if (row.disabled) return html(renderDisabled(), 410);
+        if (row.disabled) return html(renderDisabled(), 410, NO_STORE);
+        if (row.upload_status === "uploading") return html(renderUploading(rowToVideo(row)), 200, NO_STORE);
+        if (row.upload_status === "failed") return html(renderUploadFailed(rowToVideo(row)), 503, NO_STORE);
         const v = rowToVideo(row);
         const dv = decorate(request, env, v);
         dv.mediaURL = await resolveMediaURL(request, env, v);
@@ -672,6 +714,10 @@ export default {
       // Landing page — never lists the catalog (this is a private server).
       if (pathname === "/" && method === "GET") {
         return html(renderLanding());
+      }
+
+      if (pathname === "/download" && method === "GET") {
+        return Response.redirect("https://github.com/maxig/cue/releases/latest/download/Cue.dmg", 302);
       }
 
       return json({ error: "not found" }, { status: 404 });
@@ -699,9 +745,12 @@ async function serveFile(key, request, env, opts = {}) {
   // The owner preview path (opts.ownerView, behind ownerError) skips the
   // disabled gate so the owner can still watch their own paused recordings.
   const owner = await env.DB.prepare(
-    "SELECT disabled FROM videos WHERE object_key = ?1 OR audio_key = ?1"
+    "SELECT disabled, upload_status FROM videos WHERE object_key = ?1 OR audio_key = ?1"
   ).bind(key).first();
   if (!owner) return new Response("not found", { status: 404, headers: CORS });
+  if ((owner.upload_status || "ready") !== "ready") {
+    return new Response("upload not ready", { status: 425, headers: { ...CORS, "retry-after": "2" } });
+  }
   if (!opts.ownerView && owner.disabled) return new Response("disabled", { status: 410, headers: CORS });
 
   if (request.method === "HEAD") {
@@ -719,9 +768,18 @@ async function serveFile(key, request, env, opts = {}) {
   const range = request.headers.get("range");
   let object;
   if (range) {
-    const m = /bytes=(\d*)-(\d*)/.exec(range);
+    const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+    if (!m || (m[1] === "" && m[2] === "")) {
+      return new Response("invalid range", { status: 416, headers: CORS });
+    }
     const start = m && m[1] !== "" ? Number(m[1]) : undefined;
     const end = m && m[2] !== "" ? Number(m[2]) : undefined;
+    if ((start !== undefined && (!Number.isSafeInteger(start) || start < 0))
+        || (end !== undefined && (!Number.isSafeInteger(end) || end < 0))
+        || (start !== undefined && end !== undefined && end < start)
+        || (start === undefined && end === 0)) {
+      return new Response("invalid range", { status: 416, headers: CORS });
+    }
     let opts;
     if (start !== undefined && end !== undefined) opts = { range: { offset: start, length: end - start + 1 } };
     else if (start !== undefined) opts = { range: { offset: start } };
@@ -1060,12 +1118,14 @@ async function deleteEngagement(env, id) {
 // evicts `keepId` (the recording that was just uploaded).
 async function enforceStorageCap(env, keepId) {
   const cap = Number(env.MAX_BYTES) || DEFAULT_MAX_BYTES;
-  const agg = await env.DB.prepare("SELECT COALESCE(SUM(bytes), 0) AS total FROM videos").first();
+  const agg = await env.DB.prepare(
+    "SELECT COALESCE(SUM(bytes), 0) AS total FROM videos WHERE upload_status = 'ready'"
+  ).first();
   let total = Number(agg?.total || 0);
   if (total <= cap) return;
 
   const { results } = await env.DB.prepare(
-    "SELECT id, object_key, audio_key, bytes FROM videos WHERE id != ? ORDER BY created_at ASC"
+    "SELECT id, object_key, audio_key, bytes FROM videos WHERE id != ? AND upload_status = 'ready' ORDER BY created_at ASC"
   ).bind(keepId).all();
 
   for (const row of results || []) {
@@ -1090,8 +1150,11 @@ async function ownerMediaURL(request, env, video) {
 // Public-engagement guard: returns an error Response unless the recording exists
 // and its share link is enabled (so viewers can only engage with live videos).
 async function enabledVideoError(env, id) {
-  const row = await env.DB.prepare("SELECT disabled FROM videos WHERE id = ?").bind(id).first();
+  const row = await env.DB.prepare("SELECT disabled, upload_status FROM videos WHERE id = ?").bind(id).first();
   if (!row) return json({ error: "not found" }, { status: 404, headers: NO_STORE });
+  if ((row.upload_status || "ready") !== "ready") {
+    return json({ error: "upload not ready" }, { status: 425, headers: { ...NO_STORE, "retry-after": "2" } });
+  }
   if (row.disabled) return json({ error: "link disabled" }, { status: 410, headers: NO_STORE });
   return null;
 }

@@ -641,6 +641,9 @@ enum VideoComposer {
             throw RecordingError.compositionFailed("exporter unavailable")
         }
         export.videoComposition = videoComposition
+        // Move MP4 metadata ahead of media data so browsers can begin playback
+        // after fetching the head instead of waiting for the entire object.
+        export.shouldOptimizeForNetworkUse = true
         do {
             try await export.export(to: outputURL, as: .mp4)
         } catch {
@@ -669,6 +672,7 @@ enum VideoComposer {
                                                 presetName: AVAssetExportPresetAppleM4A) else {
             return false
         }
+        export.shouldOptimizeForNetworkUse = true
         try await export.export(to: outputURL, as: .m4a)
         return true
     }
@@ -807,7 +811,9 @@ enum AudioMixer {
         writer.add(writerInput)
 
         guard reader.startReading() else { throw RecordingError.compositionFailed("audio reader start") }
-        writer.startWriting()
+        guard writer.startWriting() else {
+            throw writer.error ?? RecordingError.compositionFailed("audio writer start")
+        }
         writer.startSession(atSourceTime: .zero)
 
         let q = DispatchQueue(label: "com.max.Cue.AudioMixer")

@@ -28,6 +28,8 @@ const sampleRow = {
   height: 1080,
   capture_mode: "screen",
   created_at: "2026-07-18T12:00:00.000Z",
+  upload_status: "ready",
+  upload_updated_at: "2026-07-18T12:00:00.000Z",
   disabled: 0,
   transcript: "Um, hello, you know, world.",
   transcript_vtt: "WEBVTT\n\n00:01.250 --> 00:03.000\nUm\n\n00:03.000 --> 00:05.000\nHello world.\n",
@@ -47,7 +49,12 @@ function mockEnvironment(row = sampleRow) {
           return {
             async first() {
               if (sql.includes("SELECT * FROM videos WHERE id")) return { ...row };
-              if (sql.includes("SELECT disabled FROM videos")) return { disabled: row.disabled };
+              if (sql.includes("SELECT upload_status, disabled")) {
+                return { upload_status: row.upload_status || "ready", disabled: row.disabled };
+              }
+              if (sql.includes("SELECT disabled") && sql.includes("FROM videos")) {
+                return { disabled: row.disabled, upload_status: row.upload_status || "ready" };
+              }
               return null;
             },
             async all() {
@@ -112,6 +119,62 @@ test("public player renders stored VTT as clickable timestamped transcript lines
   assert.match(markup, /class="ts-transcript"/);
   assert.match(markup, /onclick="seekTo\(1\.25\)"/);
   assert.match(markup, /Hello world\./);
+});
+
+test("an early upload entity has a stable loading page and public status", async () => {
+  const row = { ...sampleRow, upload_status: "uploading", disabled: 0 };
+  const { env } = mockEnvironment(row);
+  const page = await worker.fetch(new Request("https://cue.test/v/video-1"), env);
+  assert.equal(page.status, 200);
+  const markup = await page.text();
+  assert.match(markup, /Your recording is on its way/);
+  assert.doesNotMatch(markup, /<video/);
+  assert.equal(page.headers.get("cache-control"), "no-store");
+
+  const status = await worker.fetch(new Request("https://cue.test/api/public/videos/video-1/status"), env);
+  assert.equal(status.status, 200);
+  assert.deepEqual(await status.json(), { status: "uploading", disabled: false });
+});
+
+test("registration persists upload lifecycle and requested public visibility", async () => {
+  const { env, writes } = mockEnvironment();
+  const response = await worker.fetch(ownerRequest("https://cue.test/api/videos", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      id: "new-video",
+      title: "Fresh upload",
+      objectKey: "new-video/final.mp4",
+      uploadStatus: "uploading",
+      disabled: false,
+    }),
+  }), env);
+  assert.equal(response.status, 200);
+  const insert = writes.find(({ sql }) => sql.includes("INSERT INTO videos"));
+  assert.ok(insert);
+  assert.equal(insert.values[10], "uploading");
+  assert.equal(insert.values[12], 0);
+  assert.doesNotMatch(insert.sql, /disabled=excluded\.disabled/);
+});
+
+test("a disabled link stays private while its upload is incomplete", async () => {
+  const row = { ...sampleRow, upload_status: "uploading", disabled: 1 };
+  const { env } = mockEnvironment(row);
+  const page = await worker.fetch(new Request("https://cue.test/v/video-1"), env);
+  assert.equal(page.status, 410);
+  assert.match(await page.text(), /disabled by its owner/);
+});
+
+test("landing page links to GitHub and the stable DMG download route", async () => {
+  const { env } = mockEnvironment();
+  const page = await worker.fetch(new Request("https://cue.test/"), env);
+  const markup = await page.text();
+  assert.match(markup, /github\.com\/maxig\/cue/);
+  assert.match(markup, /href="\/download"/);
+
+  const download = await worker.fetch(new Request("https://cue.test/download"), env);
+  assert.equal(download.status, 302);
+  assert.equal(download.headers.get("location"), "https://github.com/maxig/cue/releases/latest/download/Cue.dmg");
 });
 
 test("summary generation creates a concise title and timestamped smart chapters", async () => {

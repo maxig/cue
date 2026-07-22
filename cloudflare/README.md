@@ -130,7 +130,13 @@ npm run db:schema:local    # the local `wrangler dev` simulator
 > ```sh
 > npm run db:migrate:metadata-sync
 > ```
-> Fresh databases created from `schema.sql` already include these columns.
+>
+> **Enabling resumable uploads and early share links on an existing database?**
+> Apply the upload-lifecycle migration before deploying the matching Worker:
+> ```sh
+> npm run db:migrate:upload-status
+> ```
+> Fresh databases created from `schema.sql` already include all of these columns.
 
 ---
 
@@ -317,9 +323,10 @@ directly.
 
 ## Owner controls
 
-**Links are off by default.** Uploading (or **Re-upload**) puts the file in R2 but
-leaves the share link **disabled** — nothing is reachable until you click **Enable
-link**. New uploads always start off.
+An explicit Cue-server share allocates an unguessable capability URL immediately.
+While multipart upload is running, that URL shows a waiting page; it becomes a live
+player as soon as R2 completion succeeds. Private uploads created only for native AI
+insights remain disabled. Any live link can be disabled again at any time.
 
 From the app's Library (right-click a row, or the detail pane) — or from the
 [Access dashboard](#step-6-recommended--owner-dashboard-via-cloudflare-access):
@@ -454,7 +461,7 @@ archive.
 | Method | Path | Access | Purpose |
 | --- | --- | --- | --- |
 | `GET` | `/healthz` | public | health check |
-| `POST` | `/api/videos` | **owner** | register an upload (`objectKey`, optional `audioKey`, `bytes`) → `{ id, url }` |
+| `POST` | `/api/videos` | **owner** | create/finalize an upload (`uploadStatus`, `objectKey`, optional `audioKey`, `bytes`) → stable `{ id, url }` |
 | `GET` | `/api/videos` | **owner** | list all recordings |
 | `GET` | `/api/videos/search?q=` | **owner** | search titles + transcripts → matches with snippets |
 | `GET` | `/api/videos/:id` | **owner** | fetch one recording |
@@ -473,7 +480,9 @@ archive.
 | `POST` | `/api/public/videos/:id/comments` | public\* | post a timestamped comment · *\*enabled links only* |
 | `DELETE` | `/api/public/videos/:id/comments/:cid` | author / owner | delete a comment (author via viewer id, or owner) |
 | `GET` | `/api/public/videos/:id/engagement` | public\* | reactions + comments JSON · *\*enabled links only* |
-| `GET` | `/` | public | private landing page (never lists the catalog) |
+| `GET` | `/api/public/videos/:id/status` | capability link | minimal `uploading` / `ready` / `failed` state for the waiting page |
+| `GET` | `/` | public | Cue landing and install instructions (never lists the catalog) |
+| `GET` | `/download` | public | redirect to the latest signed `Cue.dmg` GitHub release asset |
 
 ---
 

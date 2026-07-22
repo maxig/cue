@@ -10,9 +10,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     let updater = UpdaterController()
     private var statusController: StatusItemController?
+    private var isPreparingToTerminate = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusController = StatusItemController(app: appState, updater: updater)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard appState.isBusy else { return .terminateNow }
+        guard !isPreparingToTerminate else { return .terminateLater }
+        isPreparingToTerminate = true
+        Task { @MainActor [weak self, weak sender] in
+            await self?.appState.prepareForTermination()
+            sender?.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 

@@ -27,7 +27,7 @@ Worker that also does AI transcription).
 - 🪶 **Menubar-first** — a tiny agent, no Dock clutter. Click, record, done.
 - 🖥️ **Native capture** — ScreenCaptureKit + AVFoundation. Screen, window, region, or camera-only.
 - 🎥 **Camera bubble** — a draggable webcam overlay, baked into the final video as picture-in-picture.
-- 🔒 **Private by default** — share links are **off** until you enable them; the backend is fail-closed.
+- 🔗 **Link first** — Cue allocates and copies the share URL before upload; visitors see a waiting page until media is ready.
 - ☁️ **Self-hosted sharing** — local (MinIO + Node) or Cloudflare (R2 + D1 + Worker), your choice.
 - 🤖 **AI transcription** — Whisper via Workers AI on the Cloudflare backend.
 - ✨ **Liquid Glass UI** — adopts Apple's macOS 26 design language, with a tuned fallback on macOS 15.
@@ -71,11 +71,11 @@ Worker that also does AI transcription).
 ## 🧭 How it works
 
 ```
-   ┌─────────────────┐   record    ┌──────────────┐   PUT (S3/SigV4)   ┌──────────┐
-   │  Cue menubar app │ ──────────▶ │  final.mp4   │ ─────────────────▶ │  Storage │
+   ┌─────────────────┐   record    ┌──────────────┐  multipart SigV4   ┌──────────┐
+   │  Cue menubar app │ ──────────▶ │  final.mp4   │ ═════════════════▶ │  Storage │
    │  (SwiftUI/AppKit) │            │  + audio.m4a │                     │ R2/MinIO │
    └─────────────────┘             └──────────────┘                     └────┬─────┘
-            │ register metadata (owner token)                                │ stream
+            │ create stable link first (owner token)                         │ stream
             ▼                                                                 ▼
    ┌─────────────────────────────┐   share link    ┌───────────────────────────────┐
    │  Backend (Worker / Node)     │ ──────────────▶ │  Web player  /v/<id>           │
@@ -83,9 +83,10 @@ Worker that also does AI transcription).
    └─────────────────────────────┘                 └───────────────────────────────┘
 ```
 
-The app records locally and uploads the finished file **directly to your bucket**.
-The backend only stores metadata and serves the player page — it never proxies the
-upload. Share links start **disabled**; you flip them on per recording.
+The app records locally, creates the metadata entity and stable share URL, then
+uploads the finished file **directly to your bucket** in parallel, resumable parts.
+The backend never proxies the upload. If Cue quits or the network drops, the next
+attempt resumes from its on-disk part checkpoint instead of restarting from zero.
 
 ---
 
@@ -168,13 +169,14 @@ Access-gated dashboard** at `/app` to browse your whole library from the browser
 
 Cue is built to keep your library private:
 
-- **Links are off by default.** A fresh upload is registered **disabled** — nothing
-  is viewable until you click *Enable link*.
+- **Uploads use capability links.** Choosing the Cue sharing backend creates an
+  unguessable link immediately and publishes it when the upload completes. AI-only
+  uploads stay disabled, and any live link can be disabled again from the Library.
 - **The backend is fail-closed.** Every `/api` endpoint (list, register, delete,
   enable/disable, transcribe) requires an **owner token**; without it you get `401`,
   and the whole surface is `503` until the token is configured.
 - **No public catalog.** There is no endpoint that lists your videos to the public;
-  the landing page shows nothing. Only enabled `/v/<id>` links work, and IDs are
+  the landing page never exposes recordings. Only enabled `/v/<id>` links work, and IDs are
   random UUIDs (unguessable capability URLs).
 - **Private storage.** On the Cloudflare backend the R2 bucket is private (no public
   URL, no CORS); bytes flow only through the Worker while a link is enabled. The D1

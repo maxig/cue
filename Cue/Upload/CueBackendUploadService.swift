@@ -22,9 +22,10 @@ struct CueRemoteRecording: Decodable, Sendable {
     let summaryUpdatedAt: Date?
     let disabled: Bool?
     let shareURL: URL?
+    let uploadStatus: String?
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, transcript, summary, titleUpdatedAt, transcriptUpdatedAt, summaryUpdatedAt, disabled, shareURL
+        case id, title, transcript, summary, titleUpdatedAt, transcriptUpdatedAt, summaryUpdatedAt, disabled, shareURL, uploadStatus
         case transcriptVTT = "transcriptVtt"
     }
 }
@@ -43,14 +44,42 @@ final class CueBackendUploadService: UploadService {
     private let minio: MinIOUploadService
     private let backendBaseURL: String
     private let ownerToken: String
+    private let publishOnUpload: Bool
 
-    init(minioConfig: MinIOUploadService.Config, backendBaseURL: String, ownerToken: String = "") {
+    init(
+        minioConfig: MinIOUploadService.Config,
+        backendBaseURL: String,
+        ownerToken: String = "",
+        publishOnUpload: Bool = false
+    ) {
         self.minio = MinIOUploadService(config: minioConfig)
         self.backendBaseURL = backendBaseURL
         self.ownerToken = ownerToken
+        self.publishOnUpload = publishOnUpload
     }
 
     var displayName: String { "Cue server" }
+    var linksArePublicOnUpload: Bool { publishOnUpload }
+
+    func prepare(recording: Recording, fileURL: URL) async throws -> URL? {
+        guard !backendBaseURL.isEmpty, URL(string: backendBaseURL) != nil else {
+            throw UploadError.notConfigured("backend URL")
+        }
+        let objectKey = minio.objectKey(for: recording, fileURL: fileURL)
+        let audioKey = recording.audioFileName.map {
+            minio.objectKey(
+                for: recording,
+                fileURL: fileURL.deletingLastPathComponent().appendingPathComponent($0)
+            )
+        }
+        return try await register(
+            recording: recording,
+            objectKey: objectKey,
+            audioKey: audioKey,
+            bytes: 0,
+            status: "uploading"
+        )
+    }
 
     func upload(
         recording: Recording,
@@ -61,27 +90,81 @@ final class CueBackendUploadService: UploadService {
             throw UploadError.notConfigured("backend URL")
         }
 
-        // 1) Upload the media to MinIO.
         let objectKey = minio.objectKey(for: recording, fileURL: fileURL)
-        _ = try await minio.putObject(objectKey: objectKey, fileURL: fileURL, progress: progress)
-
-        // 1b) Upload the audio-only sidecar (used for transcription) if present,
-        // so the backend transcribes audio rather than the full video. It lives
-        // next to the video in the recording folder.
         var audioKey: String?
         var audioBytes = 0
-        if let audioName = recording.audioFileName {
-            let audioURL = fileURL.deletingLastPathComponent().appendingPathComponent(audioName)
-            if FileManager.default.fileExists(atPath: audioURL.path) {
-                let key = minio.objectKey(for: recording, fileURL: audioURL)
-                _ = try await minio.putObject(objectKey: key, fileURL: audioURL,
-                                              contentType: "audio/mp4", progress: { _ in })
-                audioKey = key
+        let audioURL = recording.audioFileName.map {
+            fileURL.deletingLastPathComponent().appendingPathComponent($0)
+        }.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+        if let audioURL { audioKey = minio.objectKey(for: recording, fileURL: audioURL) }
+
+        // Allocate the stable link before moving bytes. This call is idempotent,
+        // so relaunch recovery reuses the same entity and multipart checkpoint.
+        _ = try await register(
+            recording: recording,
+            objectKey: objectKey,
+            audioKey: audioKey,
+            bytes: 0,
+            status: "uploading"
+        )
+
+        do {
+            _ = try await minio.putObject(
+                objectKey: objectKey,
+                fileURL: fileURL,
+                retainCompletionCheckpoint: true,
+                progress: progress
+            )
+            if let audioURL, let audioKey {
+                _ = try await minio.putObject(
+                    objectKey: audioKey,
+                    fileURL: audioURL,
+                    contentType: "audio/mp4",
+                    retainCompletionCheckpoint: true,
+                    progress: { _ in }
+                )
                 audioBytes = fileSize(audioURL)
             }
-        }
 
-        // 2) Register metadata with the backend.
+            let readyURL = try await register(
+                recording: recording,
+                objectKey: objectKey,
+                audioKey: audioKey,
+                bytes: fileSize(fileURL) + audioBytes,
+                status: "ready"
+            )
+            return readyURL
+        } catch {
+            // Best effort only: the resumable checkpoint remains authoritative on
+            // this Mac even if the status update cannot reach the backend.
+            _ = try? await register(
+                recording: recording,
+                objectKey: objectKey,
+                audioKey: audioKey,
+                bytes: 0,
+                status: "failed"
+            )
+            throw error
+        }
+    }
+
+    func confirmUploadPersisted(recording: Recording, fileURL: URL) {
+        let objectKey = minio.objectKey(for: recording, fileURL: fileURL)
+        minio.clearUploadCheckpoint(objectKey: objectKey, fileURL: fileURL)
+        if let audioName = recording.audioFileName {
+            let audioURL = fileURL.deletingLastPathComponent().appendingPathComponent(audioName)
+            let audioKey = minio.objectKey(for: recording, fileURL: audioURL)
+            minio.clearUploadCheckpoint(objectKey: audioKey, fileURL: audioURL)
+        }
+    }
+
+    private func register(
+        recording: Recording,
+        objectKey: String,
+        audioKey: String?,
+        bytes: Int,
+        status: String
+    ) async throws -> URL {
         let base = backendBaseURL.trimmingTrailingSlash()
         guard let endpoint = URL(string: base + "/api/videos") else {
             throw UploadError.notConfigured("backend URL")
@@ -99,11 +182,13 @@ final class CueBackendUploadService: UploadService {
             "title": recording.title,
             "durationSeconds": recording.duration,
             "objectKey": objectKey,
-            "bytes": fileSize(fileURL) + audioBytes,
+            "bytes": bytes,
             "width": recording.width ?? 0,
             "height": recording.height ?? 0,
             "captureMode": recording.captureMode.rawValue,
-            "createdAt": isoFormatter.string(from: recording.createdAt)
+            "createdAt": isoFormatter.string(from: recording.createdAt),
+            "uploadStatus": status,
+            "disabled": !publishOnUpload
         ]
         if let updatedAt = recording.titleUpdatedAt {
             payload["titleUpdatedAt"] = Self.isoString(updatedAt)
@@ -111,7 +196,7 @@ final class CueBackendUploadService: UploadService {
         if let audioKey { payload["audioKey"] = audioKey }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await Self.dataWithRetry(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             throw UploadError.server(status: status, body: String(data: data, encoding: .utf8) ?? "")
@@ -125,6 +210,31 @@ final class CueBackendUploadService: UploadService {
             throw UploadError.notConfigured("share URL")
         }
         return fallback
+    }
+
+    /// Metadata registration is idempotent by recording UUID, so retrying a
+    /// transient failure is safe and avoids making a completed multipart upload
+    /// look failed because of one brief API outage.
+    private static func dataWithRetry(for request: URLRequest) async throws -> (Data, URLResponse) {
+        var lastError: Error?
+        for attempt in 0..<4 {
+            do {
+                let result = try await URLSession.shared.data(for: request)
+                let status = (result.1 as? HTTPURLResponse)?.statusCode ?? 0
+                if (200..<300).contains(status) || ![408, 429, 500, 502, 503, 504].contains(status) {
+                    return result
+                }
+                lastError = UploadError.server(
+                    status: status,
+                    body: String(data: result.0, encoding: .utf8) ?? ""
+                )
+            } catch {
+                lastError = error
+            }
+            guard attempt < 3 else { break }
+            try await Task.sleep(for: .milliseconds(400 * (1 << attempt)))
+        }
+        throw lastError ?? UploadError.invalidResponse("No metadata response was received.")
     }
 
     // MARK: Owner actions

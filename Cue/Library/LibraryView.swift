@@ -76,13 +76,17 @@ struct LibraryView: View {
     private func rowMenu(_ recording: Recording) -> some View {
         if let url = recording.shareURL {
             Button("Copy Link") { app.copyLink(url.absoluteString) }
-            switch recording.share {
-            case .disabled:
-                Button("Enable Link") { Task { await app.setShareDisabled(recording, disabled: false) } }
-            default:
-                Button("Disable Link") { Task { await app.setShareDisabled(recording, disabled: true) } }
+            if recording.uploadBackend == .cueServer || recording.preparedShareURL != nil {
+                switch recording.share {
+                case .disabled:
+                    Button("Enable Link") { Task { await app.setShareDisabled(recording, disabled: false) } }
+                case .shared:
+                    Button("Disable Link") { Task { await app.setShareDisabled(recording, disabled: true) } }
+                default:
+                    EmptyView()
+                }
+                Button("Remove from Cloud") { Task { await app.removeFromCloud(recording) } }
             }
-            Button("Remove from Cloud") { Task { await app.removeFromCloud(recording) } }
         }
         Button("Reveal in Finder") { app.revealInFinder(recording) }
         Divider()

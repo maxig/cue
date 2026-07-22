@@ -2,7 +2,7 @@ import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { renderPlayer, renderIndex } from "./views.js";
+import { renderPlayer, renderIndex, renderLanding, renderUploading, renderUploadFailed, renderDisabled } from "./views.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -13,18 +13,35 @@ const PUBLIC_BASE = (process.env.CUE_PUBLIC_BASE || `http://localhost:${PORT}`).
 const MINIO_PUBLIC_BASE = (process.env.MINIO_PUBLIC_BASE || "http://localhost:9000/cue").replace(/\/$/, "");
 
 const DB_PATH = path.join(__dirname, "db.json");
+const DB_BACKUP_PATH = path.join(__dirname, "db.backup.json");
 
 // --- tiny JSON store -------------------------------------------------------
 
 function loadDB() {
-  try {
-    return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
-  } catch {
-    return { videos: {} };
+  for (const candidate of [DB_PATH, DB_BACKUP_PATH]) {
+    try {
+      const db = JSON.parse(fs.readFileSync(candidate, "utf8"));
+      if (!db || typeof db !== "object" || !db.videos || typeof db.videos !== "object") continue;
+      if (candidate === DB_BACKUP_PATH) {
+        fs.copyFileSync(DB_BACKUP_PATH, DB_PATH);
+        console.warn("Cue server restored db.json from its backup");
+      }
+      return db;
+    } catch {}
   }
+  return { videos: {} };
 }
 function saveDB(db) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+  const temporary = `${DB_PATH}.${process.pid}.tmp`;
+  const handle = fs.openSync(temporary, "w", 0o600);
+  try {
+    fs.writeFileSync(handle, JSON.stringify(db, null, 2));
+    fs.fsyncSync(handle);
+  } finally {
+    fs.closeSync(handle);
+  }
+  if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, DB_BACKUP_PATH);
+  fs.renameSync(temporary, DB_PATH);
 }
 
 function mediaURL(video) {
@@ -44,6 +61,8 @@ function apiVideo(video) {
     titleUpdatedAt: video.titleUpdatedAt || video.createdAt || null,
     transcriptUpdatedAt: video.transcript == null ? null : (video.transcriptUpdatedAt || video.createdAt || null),
     summaryUpdatedAt: video.summary == null ? null : (video.summaryUpdatedAt || video.createdAt || null),
+    uploadStatus: video.uploadStatus || "ready",
+    uploadUpdatedAt: video.uploadUpdatedAt || video.createdAt || null,
     mediaURL: mediaURL(video),
     shareURL: `${PUBLIC_BASE}/v/${video.id}`,
   };
@@ -59,7 +78,11 @@ app.use(express.urlencoded({ extended: false, limit: "32kb" }));
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: https:; media-src 'self' blob: http: https:");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
@@ -78,6 +101,8 @@ app.post("/api/videos", (req, res) => {
   const incomingTitleAt = normalizedTimestamp(req.body?.titleUpdatedAt, created);
   const existingTitleAt = normalizedTimestamp(existing?.titleUpdatedAt, existing?.createdAt || "");
   const useIncomingTitle = !existing || !existingTitleAt || incomingTitleAt >= existingTitleAt;
+  const uploadStatus = ["uploading", "ready", "failed"].includes(req.body?.uploadStatus)
+    ? req.body.uploadStatus : "ready";
   db.videos[id] = {
     ...existing,
     id,
@@ -91,7 +116,11 @@ app.post("/api/videos", (req, res) => {
     height: Number(height) || 0,
     captureMode: captureMode || "screen",
     createdAt: created,
-    disabled: existing?.disabled ?? false,
+    uploadStatus,
+    uploadUpdatedAt: new Date().toISOString(),
+    // A retry/finalization must not re-enable a link the owner disabled while
+    // an upload was running. Visibility is chosen only when the entity is born.
+    disabled: existing ? !!existing.disabled : req.body?.disabled !== false,
   };
   saveDB(db);
   res.json({ id, url: `${PUBLIC_BASE}/v/${id}` });
@@ -110,6 +139,32 @@ app.get("/api/videos/:id", (req, res) => {
   const video = db.videos[req.params.id];
   if (!video) return res.status(404).json({ error: "not found" });
   res.json(apiVideo(video));
+});
+
+app.get("/api/public/videos/:id/status", (req, res) => {
+  const video = loadDB().videos[req.params.id];
+  if (!video) return res.status(404).set("cache-control", "no-store").json({ error: "not found" });
+  res.set("cache-control", "no-store").json({
+    status: video.uploadStatus || "ready",
+    disabled: !!video.disabled,
+  });
+});
+
+app.post("/api/videos/:id/:action(enable|disable)", (req, res) => {
+  const db = loadDB();
+  const video = db.videos[req.params.id];
+  if (!video) return res.status(404).json({ error: "not found" });
+  video.disabled = req.params.action === "disable";
+  saveDB(db);
+  res.json({ id: video.id, disabled: video.disabled });
+});
+
+app.delete("/api/videos/:id", (req, res) => {
+  const db = loadDB();
+  if (!db.videos[req.params.id]) return res.status(404).json({ error: "not found" });
+  delete db.videos[req.params.id];
+  saveDB(db);
+  res.json({ deleted: req.params.id });
 });
 
 function cleanTitle(value) {
@@ -198,14 +253,29 @@ app.get("/v/:id", (req, res) => {
   if (!video) {
     return res.status(404).send(renderIndex([], { notFound: req.params.id }));
   }
+  if (video.disabled) return res.status(410).set("cache-control", "no-store").send(renderDisabled());
+  if (video.uploadStatus === "failed") {
+    return res.status(503).set("cache-control", "no-store").send(renderUploadFailed(apiVideo(video)));
+  }
+  if ((video.uploadStatus || "ready") !== "ready") {
+    return res.set("cache-control", "no-store").send(renderUploading(apiVideo(video)));
+  }
   res.send(renderPlayer(
     apiVideo(video),
-    { editable: true }
+    { editable: false }
   ));
 });
 
-// A simple library index.
+// Public product landing. Keep the local catalog at /library for development.
 app.get("/", (_req, res) => {
+  res.send(renderLanding());
+});
+
+app.get("/download", (_req, res) => {
+  res.redirect(302, "https://github.com/maxig/cue/releases/latest/download/Cue.dmg");
+});
+
+app.get("/library", (_req, res) => {
   const db = loadDB();
   const videos = Object.values(db.videos)
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))

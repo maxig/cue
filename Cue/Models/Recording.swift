@@ -97,6 +97,10 @@ struct Recording: Identifiable, Codable, Hashable {
 
     var captureMode: CaptureMode
     var share: ShareStatus
+    /// Stable Cue-server URL allocated before the media upload begins. Keeping it
+    /// in the local index lets an interrupted upload resume against the same link
+    /// after a relaunch instead of minting duplicate remote records.
+    var preparedShareURL: URL?
     /// Backend used for the current remote copy. Optional for recordings saved
     /// before this field existed; those are safely re-registered when needed.
     var uploadBackend: UploadBackend?
@@ -131,6 +135,7 @@ struct Recording: Identifiable, Codable, Hashable {
          height: Int? = nil,
          captureMode: CaptureMode = .screen,
          share: ShareStatus = .local,
+         preparedShareURL: URL? = nil,
          uploadBackend: UploadBackend? = nil,
          transcript: String? = nil,
          transcriptVTT: String? = nil,
@@ -152,6 +157,7 @@ struct Recording: Identifiable, Codable, Hashable {
         self.height = height
         self.captureMode = captureMode
         self.share = share
+        self.preparedShareURL = preparedShareURL
         self.uploadBackend = uploadBackend
         self.transcript = transcript
         self.transcriptVTT = transcriptVTT
@@ -165,7 +171,7 @@ struct Recording: Identifiable, Codable, Hashable {
     var shareURL: URL? {
         switch share {
         case let .shared(url), let .disabled(url): return url
-        default: return nil
+        default: return preparedShareURL
         }
     }
 

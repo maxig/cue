@@ -181,6 +181,51 @@ const BASE_CSS = `
   footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 28px; }
 `;
 
+const LANDING_CSS = `
+  .landing { max-width: 920px; margin: 0 auto; padding: 28px 24px 56px; }
+  .landing .topbar { margin-bottom: 72px; }
+  .github-badge { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px;
+                    border: 1px solid var(--panel-border); background: var(--panel); border-radius: 999px;
+                    padding: 7px 12px; }
+  .hero { text-align: center; max-width: 760px; margin: 0 auto; }
+  .eyebrow { color: var(--teal); font-weight: 700; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
+  .hero h1 { font-size: clamp(42px, 8vw, 76px); line-height: .98; letter-spacing: -.055em; margin: 18px 0 22px; }
+  .hero p { color: var(--muted); font-size: clamp(17px, 2.3vw, 21px); max-width: 650px; margin: 0 auto; }
+  .cta-row { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-top: 34px; }
+  .download { display: inline-flex; align-items: center; justify-content: center; gap: 9px; background: var(--accent);
+              color: #fff; font-weight: 750; border-radius: 14px; padding: 13px 20px; box-shadow: 0 12px 34px rgba(10,132,255,.3); }
+  .source { display: inline-flex; align-items: center; color: var(--text); font-weight: 650; border: 1px solid var(--panel-border);
+            background: var(--panel); border-radius: 14px; padding: 13px 20px; }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 72px 0 18px; }
+  .step { padding: 20px; min-height: 150px; }
+  .step b { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px;
+            background: rgba(10,132,255,.16); color: var(--accent); margin-bottom: 17px; }
+  .step h2 { font-size: 16px; margin: 0 0 6px; }
+  .step p { color: var(--muted); margin: 0; font-size: 13.5px; }
+  .contribute { margin-top: 14px; padding: 24px; display: flex; align-items: center; gap: 22px; }
+  .contribute h2 { margin: 0 0 5px; font-size: 18px; }
+  .contribute p { color: var(--muted); margin: 0; }
+  .contribute .source { margin-left: auto; white-space: nowrap; }
+  @media (max-width: 700px) {
+    .landing .topbar { margin-bottom: 50px; }
+    .steps { grid-template-columns: 1fr; margin-top: 52px; }
+    .step { min-height: 0; }
+    .contribute { align-items: flex-start; flex-direction: column; }
+    .contribute .source { margin-left: 0; }
+  }
+`;
+
+const UPLOAD_CSS = `
+  .upload-card { max-width: 580px; margin: 80px auto; padding: 44px 30px; text-align: center; }
+  .spinner { width: 42px; height: 42px; margin: 0 auto 22px; border-radius: 50%;
+             border: 3px solid rgba(255,255,255,.12); border-top-color: var(--accent);
+             animation: spin .9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .upload-card h1 { margin: 0 0 10px; font-size: 25px; }
+  .upload-card p { color: var(--muted); margin: 0; }
+  .upload-card .hint { margin-top: 18px; font-size: 12px; }
+`;
+
 // Reaction emoji the player offers. Must stay in sync with REACTIONS in
 // src/index.js (the server is the authority and rejects anything else).
 const REACTION_EMOJI = ["👍", "🎉", "😂", "❤️", "👀", "🔥"];
@@ -541,14 +586,81 @@ export function renderDisabled() {
 
 export function renderLanding() {
   return `<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Cue</title><style>${BASE_CSS}</style></head><body>
-<div class="wrap">
-  <div class="topbar"><div class="brand"><div class="logo"></div> Cue</div></div>
-  <div class="empty">This is a private Cue server. Open a share link to view a recording.</div>
-  <footer>Cue · self-hosted</footer>
-</div></body></html>`;
+  <html lang="en"><head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Cue is an open-source native macOS screen recorder with instant, self-hosted sharing." />
+  <title>Cue · Native screen recording for macOS</title><style>${BASE_CSS}${LANDING_CSS}</style></head><body>
+  <div class="landing">
+    <div class="topbar">
+      <div class="brand"><div class="logo"></div> Cue</div><div class="spacer"></div>
+      <a class="github-badge" href="https://github.com/maxig/cue" target="_blank" rel="noopener">⌘ Open source · GitHub ↗</a>
+    </div>
+    <main>
+      <section class="hero">
+        <div class="eyebrow">Native · private · yours</div>
+        <h1>Record your Mac.<br />Share in a moment.</h1>
+        <p>A lightweight, open-source Loom alternative that keeps recordings on your Mac and storage you control.</p>
+        <div class="cta-row">
+          <a class="download" href="/download">↓ Download Cue for macOS</a>
+          <a class="source" href="https://github.com/maxig/cue" target="_blank" rel="noopener">View source</a>
+        </div>
+      </section>
+      <section class="steps" aria-label="Install Cue">
+        <article class="card step"><b>1</b><h2>Download the DMG</h2><p>The latest signed release downloads directly from GitHub.</p></article>
+        <article class="card step"><b>2</b><h2>Move Cue to Applications</h2><p>Open the disk image, then drag Cue into the Applications folder.</p></article>
+        <article class="card step"><b>3</b><h2>Grant capture access</h2><p>Launch Cue and allow Screen Recording. Camera and microphone are optional.</p></article>
+      </section>
+      <section class="card contribute">
+        <div><h2>Help make Cue better</h2><p>Report a bug, suggest an idea, or send a pull request. Contributions are welcome.</p></div>
+        <a class="source" href="https://github.com/maxig/cue#contributing" target="_blank" rel="noopener">Contribute on GitHub ↗</a>
+      </section>
+    </main>
+    <footer>MIT licensed · built for macOS · recordings stay yours</footer>
+  </div></body></html>`;
+}
+
+export function renderUploading(v) {
+  const id = JSON.stringify(String(v.id)).replace(/</g, "\\u003c");
+  return `<!doctype html>
+  <html lang="en"><head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Uploading ${esc(v.title)} · Cue</title><style>${BASE_CSS}${UPLOAD_CSS}</style></head><body>
+  <div class="wrap">
+    <div class="topbar"><a class="brand" href="/"><div class="logo"></div> Cue</a></div>
+    <main class="card upload-card"><div class="spinner" aria-hidden="true"></div>
+      <h1>Your recording is on its way</h1>
+      <p id="uploadMessage">${esc(v.title)} is still uploading. This page will be ready automatically.</p>
+      <p class="hint">You can leave this tab open.</p>
+    </main>
+  </div>
+  <script>
+    const id=${id};
+    async function check(){
+      try {
+        const r=await fetch('/api/public/videos/'+encodeURIComponent(id)+'/status',{cache:'no-store'});
+        if(!r.ok)return;
+        const s=await r.json();
+        if(s.disabled || s.status==='ready'){ location.reload(); return; }
+        if(s.status==='failed'){
+          document.querySelector('.spinner').style.display='none';
+          document.getElementById('uploadMessage').textContent='The upload paused. The owner can resume it from the Cue app.';
+          return;
+        }
+      } catch(e) {}
+      setTimeout(check,2000);
+    }
+    setTimeout(check,1200);
+  </script></body></html>`;
+}
+
+export function renderUploadFailed(v) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" />
+  <title>Upload paused · Cue</title><style>${BASE_CSS}${UPLOAD_CSS}</style></head><body><div class="wrap">
+  <div class="topbar"><a class="brand" href="/"><div class="logo"></div> Cue</a></div>
+  <main class="card upload-card"><h1>Upload paused</h1><p>${esc(v.title)} is safe on the owner's Mac. They can resume this upload from Cue.</p></main>
+  </div></body></html>`;
 }
 
 export function renderIndex(videos, { notFound } = {}) {
@@ -584,6 +696,8 @@ const APP_CSS = `
   .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
   .badge.on { color: #2ec26b; background: rgba(46,194,107,0.16); }
   .badge.off { color: var(--muted); background: rgba(255,255,255,0.08); }
+  .badge.wait { color: #ffbf5b; background: rgba(255,191,91,0.14); }
+  .badge.fail { color: #ff8a8a; background: rgba(255,90,90,0.14); }
   .actions { display: flex; gap: 8px; align-items: center; }
   .actions form { margin: 0; }
   .btn { cursor: pointer; border: 1px solid var(--panel-border); background: rgba(255,255,255,0.06);
@@ -642,9 +756,13 @@ export function renderApp(videos, { base = "", flash = "", error = "", q = "" } 
 
   const rows = videos.map((v) => {
     const share = esc(v.shareURL || `${base}/v/${v.id}`);
-    const status = v.disabled
-      ? `<span class="badge off">Disabled</span>`
-      : `<span class="badge on">Live</span>`;
+    const status = v.uploadStatus === "uploading"
+      ? `<span class="badge wait">Uploading</span>`
+      : (v.uploadStatus === "failed"
+          ? `<span class="badge fail">Upload paused</span>`
+          : (v.disabled
+              ? `<span class="badge off">Disabled</span>`
+              : `<span class="badge on">Live</span>`));
     const toggle = v.disabled ? "enable" : "disable";
     const toggleLabel = v.disabled ? "Enable link" : "Disable link";
     const aiBadges =
