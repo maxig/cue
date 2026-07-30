@@ -47,6 +47,12 @@ struct CloudflareAPI {
         let name: String
     }
 
+    struct Zone: Decodable, Identifiable, Equatable {
+        let id: String
+        let name: String
+        let status: String?
+    }
+
     // MARK: Endpoints
 
     func verifyToken() async throws -> TokenInfo {
@@ -115,6 +121,27 @@ struct CloudflareAPI {
                               path: "accounts/\(accountId)/workers/scripts/\(scriptName)",
                               rawBody: body,
                               contentType: "multipart/form-data; boundary=\(boundary)")
+    }
+
+    /// Domains (zones) on the account that can host a custom share address.
+    func zones(accountId: String) async throws -> [Zone] {
+        try await request([Zone].self, method: "GET", path: "zones",
+                          query: [URLQueryItem(name: "account.id", value: accountId),
+                                  URLQueryItem(name: "status", value: "active"),
+                                  URLQueryItem(name: "per_page", value: "50")])
+    }
+
+    /// Attaches a Workers custom domain: Cloudflare creates the DNS record and
+    /// certificate itself. Re-attaching the same hostname to the same Worker is
+    /// idempotent; a conflicting existing DNS record fails with a clear error.
+    func attachWorkerDomain(accountId: String, zoneId: String, hostname: String, scriptName: String) async throws {
+        struct WorkerDomain: Decodable { let hostname: String? }
+        _ = try await requestOptional(WorkerDomain.self, method: "PUT",
+                                      path: "accounts/\(accountId)/workers/domains",
+                                      jsonBody: ["zone_id": zoneId,
+                                                 "hostname": hostname,
+                                                 "service": scriptName,
+                                                 "environment": "production"])
     }
 
     /// Whether a Worker script with this name is already deployed.

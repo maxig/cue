@@ -75,8 +75,13 @@ Notes:
   Access settings, `MEDIA_PUBLIC_BASE`, extra secrets — survive; custom-domain
   routes are separate config and are never touched.
 
-The manual path below remains fully supported and is what you want for custom
-domains, Cloudflare Access, and self-hosted tweaks.
+After connecting, **Use your own domain…** in the same card lists the domains
+on your Cloudflare account and attaches the share server to a subdomain you
+pick (Workers Custom Domains — DNS record and certificate are created
+automatically), so share links live on your domain instead of workers.dev.
+
+The manual path below remains fully supported and is what you want for
+Cloudflare Access and self-hosted tweaks.
 
 ---
 

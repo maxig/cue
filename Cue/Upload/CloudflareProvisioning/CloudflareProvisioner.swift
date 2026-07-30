@@ -52,6 +52,18 @@ final class CloudflareProvisioner: ObservableObject {
 
     @Published private(set) var phase: Phase = .idle
 
+    /// Optional follow-up to a connected setup: put the share link on one of
+    /// the account's own domains instead of workers.dev.
+    enum DomainPhase: Equatable {
+        case idle
+        case loadingZones
+        case choosing([CloudflareAPI.Zone])
+        case attaching(String)
+        case failed(String)
+    }
+
+    @Published private(set) var domainPhase: DomainPhase = .idle
+
     static let bucketName = "cue"
     static let databaseName = "cue"
     static let scriptName = "cue"
@@ -69,6 +81,9 @@ final class CloudflareProvisioner: ObservableObject {
             ["key": "d1", "type": "edit"],                // create the database, apply schema
             ["key": "workers_r2", "type": "edit"],        // create the bucket + S3 upload keys
             ["key": "account_settings", "type": "read"],  // find the account id
+            ["key": "zone", "type": "read"],              // list domains for a custom address
+            ["key": "workers_routes", "type": "edit"],    // attach the Worker to a domain
+            ["key": "dns", "type": "edit"],               // let Cloudflare create the DNS record
         ]
         let json = String(
             data: try! JSONSerialization.data(withJSONObject: permissions),
@@ -153,6 +168,80 @@ final class CloudflareProvisioner: ObservableObject {
         settings?.cloudflareAccountId = ""
         pendingToken = ""
         phase = .idle
+        domainPhase = .idle
+    }
+
+    // MARK: Custom domain
+
+    func beginDomainSelection() {
+        guard let settings, !settings.cloudflareAPIToken.isEmpty, !settings.cloudflareAccountId.isEmpty else {
+            domainPhase = .failed("Connect a Cloudflare account first.")
+            return
+        }
+        let api = CloudflareAPI(token: settings.cloudflareAPIToken)
+        let accountId = settings.cloudflareAccountId
+        domainPhase = .loadingZones
+        Task {
+            do {
+                let zones = try await api.zones(accountId: accountId)
+                if zones.isEmpty {
+                    domainPhase = .failed("There are no domains on this Cloudflare account yet. Add one in Cloudflare first, or keep the free workers.dev address.")
+                } else {
+                    domainPhase = .choosing(zones)
+                }
+            } catch {
+                domainPhase = .failed(domainMessage(for: error))
+            }
+        }
+    }
+
+    func attachDomain(zone: CloudflareAPI.Zone, subdomain rawSubdomain: String) {
+        guard let settings else { return }
+        let subdomain = rawSubdomain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard Self.isValidSubdomain(subdomain) else {
+            domainPhase = .failed("Use only letters, numbers, and hyphens for the subdomain — for example “cue”.")
+            return
+        }
+        let hostname = "\(subdomain).\(zone.name)"
+        let api = CloudflareAPI(token: settings.cloudflareAPIToken)
+        let accountId = settings.cloudflareAccountId
+        let ownerToken = settings.ownerToken
+        domainPhase = .attaching(hostname)
+        Task {
+            do {
+                try await api.attachWorkerDomain(accountId: accountId, zoneId: zone.id,
+                                                 hostname: hostname, scriptName: Self.scriptName)
+                // Certificates for a fresh hostname can take a little while.
+                try await Self.waitForWorker(url: "https://\(hostname)", ownerToken: ownerToken, attempts: 20)
+                settings.backendBaseURL = "https://\(hostname)"
+                domainPhase = .idle
+                phase = .connected(workerURL: settings.backendBaseURL)
+            } catch {
+                domainPhase = .failed(domainMessage(for: error))
+            }
+        }
+    }
+
+    func cancelDomainSelection() {
+        domainPhase = .idle
+    }
+
+    private func domainMessage(for error: Error) -> String {
+        if let failure = error as? CloudflareAPI.RequestFailure {
+            if failure.status == 401 || failure.status == 403 {
+                return "The saved token can't manage domains — it was created before this feature. Choose “Run setup again” with a fresh token from the pre-filled page, then retry."
+            }
+            if failure.messageContains(["record", "conflict", "already"]) {
+                return "That address is already in use (an existing DNS record is in the way). Pick a different subdomain, or remove the record in Cloudflare first."
+            }
+        }
+        return friendlyMessage(for: error)
+    }
+
+    private static func isValidSubdomain(_ value: String) -> Bool {
+        guard !value.isEmpty, value.count <= 63,
+              !value.hasPrefix("-"), !value.hasSuffix("-") else { return false }
+        return value.allSatisfy { $0.isLowercase && $0.isLetter || $0.isNumber || $0 == "-" }
     }
 
     // MARK: Pipeline
@@ -311,29 +400,30 @@ final class CloudflareProvisioner: ObservableObject {
 
     /// Fresh workers.dev hostnames can take a little while to resolve; retry
     /// DNS/edge errors, fail fast on real HTTP errors.
-    private static func waitForWorker(url: String, ownerToken: String) async throws {
+    private static func waitForWorker(url: String, ownerToken: String, attempts: Int = 10) async throws {
         guard let endpoint = URL(string: url + "/api/videos") else {
             throw SetupError("The share server address is invalid.")
         }
         var request = URLRequest(url: endpoint)
         request.setValue("Bearer \(ownerToken)", forHTTPHeaderField: "Authorization")
         var lastMessage = "The share server did not come online."
-        for attempt in 0..<10 {
+        for attempt in 0..<attempts {
             do {
                 let (_, response) = try await URLSession.shared.data(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 if (200..<300).contains(status) { return }
-                guard [404, 522, 523, 530].contains(status) else {
+                // 52x/530: edge not ready; 525/526: certificate still provisioning.
+                guard [404, 522, 523, 525, 526, 530].contains(status) else {
                     throw SetupError("The deployed server answered HTTP \(status). Try running setup again.")
                 }
                 lastMessage = "The new share link isn't reachable yet (HTTP \(status))."
             } catch let error as URLError {
                 lastMessage = error.localizedDescription
             }
-            guard attempt < 9 else { break }
+            guard attempt < attempts - 1 else { break }
             try await Task.sleep(for: .seconds(3))
         }
-        throw SetupError(lastMessage + " New workers.dev addresses can take a minute — try again shortly.")
+        throw SetupError(lastMessage + " New addresses can take a few minutes to go live — try again shortly.")
     }
 
     // MARK: Helpers

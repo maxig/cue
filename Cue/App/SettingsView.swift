@@ -7,6 +7,8 @@ struct SettingsView: View {
     @EnvironmentObject private var updater: UpdaterController
     @StateObject private var cloudflareSetup = CloudflareProvisioner()
     @State private var cloudflareToken = ""
+    @State private var selectedZoneID = ""
+    @State private var subdomainLabel = "cue"
     var onBack: () -> Void = {}
 
     private var prefs: Preferences { app.preferences }
@@ -321,6 +323,8 @@ struct SettingsView: View {
                 .padding(.vertical, 8)
                 Caption("Your recordings share at \(workerURL). The fields below were filled in automatically — you normally don't need to touch them.")
                 Divider().opacity(0.5)
+                domainSection
+                Divider().opacity(0.5)
                 RowButton("Run setup again…", system: "arrow.clockwise") {
                     cloudflareSetup.reprovision()
                 }
@@ -332,6 +336,78 @@ struct SettingsView: View {
                 }
                 Caption("Forgetting the token only stops automatic setup — sharing keeps working with the settings below.")
             }
+        }
+    }
+
+    /// Inside the connected card: move the share link onto one of the
+    /// account's own domains, entirely from within Settings.
+    @ViewBuilder
+    private var domainSection: some View {
+        switch cloudflareSetup.domainPhase {
+        case .idle:
+            RowButton("Use your own domain…", system: "globe") {
+                cloudflareSetup.beginDomainSelection()
+            }
+
+        case .loadingZones:
+            HStack(spacing: 9) {
+                ProgressView().controlSize(.small)
+                Text("Looking up your domains…").font(.cueRowTitle).foregroundStyle(Theme.secondaryText)
+                Spacer()
+            }
+            .padding(.vertical, 10)
+
+        case .choosing(let zones):
+            Caption("Pick a domain and a subdomain for your share links. Cloudflare creates the address and certificate automatically.")
+            Picker("", selection: $selectedZoneID) {
+                ForEach(zones) { zone in Text(zone.name).tag(zone.id) }
+            }
+            .labelsHidden()
+            .onAppear { if selectedZoneID.isEmpty { selectedZoneID = zones.first?.id ?? "" } }
+            HStack(spacing: 6) {
+                TextField("", text: $subdomainLabel, prompt: Text("cue"))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .frame(width: 90)
+                Text("." + (zones.first(where: { $0.id == selectedZoneID })?.name ?? ""))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+            }
+            .padding(.vertical, 4)
+            HStack(spacing: 10) {
+                Button("Connect domain") {
+                    if let zone = zones.first(where: { $0.id == selectedZoneID }) {
+                        cloudflareSetup.attachDomain(zone: zone, subdomain: subdomainLabel)
+                    }
+                }
+                .disabled(selectedZoneID.isEmpty || subdomainLabel.trimmingCharacters(in: .whitespaces).isEmpty)
+                Spacer()
+                Button("Cancel") { cloudflareSetup.cancelDomainSelection() }
+            }
+            .controlSize(.small)
+            .padding(.vertical, 9)
+
+        case .attaching(let hostname):
+            HStack(spacing: 9) {
+                ProgressView().controlSize(.small)
+                Text("Setting up \(hostname)…").font(.cueRowTitle).foregroundStyle(Theme.primaryText)
+                Spacer()
+            }
+            .padding(.vertical, 10)
+            Caption("Creating the address and its certificate. This can take a few minutes on a brand-new subdomain.")
+
+        case .failed(let message):
+            Caption(message)
+            HStack(spacing: 10) {
+                Button("Try Again") { cloudflareSetup.beginDomainSelection() }
+                Spacer()
+                Button("Cancel") { cloudflareSetup.cancelDomainSelection() }
+            }
+            .controlSize(.small)
+            .padding(.vertical, 9)
         }
     }
 
