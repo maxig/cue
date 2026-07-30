@@ -17,6 +17,8 @@ final class UploadSettings: ObservableObject {
         static let backendBaseURL = "cue.backend.baseURL"
         static let secretAccount = "minio.secretKey"
         static let ownerTokenAccount = "cue.owner.token"
+        static let cloudflareAccountId = "cue.cloudflare.accountId"
+        static let cloudflareTokenAccount = "cue.cloudflare.apiToken"
     }
 
     @Published var backend: UploadBackend {
@@ -31,6 +33,12 @@ final class UploadSettings: ObservableObject {
     @Published var secretKey: String { didSet { Keychain.set(secretKey, for: Key.secretAccount) } }
     /// Owner token for privileged backend actions, including native Library AI.
     @Published var ownerToken: String { didSet { Keychain.set(ownerToken, for: Key.ownerTokenAccount) } }
+    /// One-click Cloudflare setup: the account it provisioned into, and the API
+    /// token that authorizes re-provisioning (Keychain-only, like all secrets).
+    @Published var cloudflareAccountId: String { didSet { defaults.set(cloudflareAccountId, forKey: Key.cloudflareAccountId) } }
+    @Published var cloudflareAPIToken: String {
+        didSet { Keychain.set(cloudflareAPIToken.isEmpty ? nil : cloudflareAPIToken, for: Key.cloudflareTokenAccount) }
+    }
 
     init() {
         backend = UploadBackend(rawValue: defaults.string(forKey: Key.backend) ?? "") ?? .localStub
@@ -42,6 +50,8 @@ final class UploadSettings: ObservableObject {
         backendBaseURL = defaults.string(forKey: Key.backendBaseURL) ?? "http://localhost:8787"
         secretKey = Keychain.get(Key.secretAccount) ?? ""
         ownerToken = Keychain.get(Key.ownerTokenAccount) ?? ""
+        cloudflareAccountId = defaults.string(forKey: Key.cloudflareAccountId) ?? ""
+        cloudflareAPIToken = Keychain.get(Key.cloudflareTokenAccount) ?? ""
     }
 
     var minioConfig: MinIOUploadService.Config {

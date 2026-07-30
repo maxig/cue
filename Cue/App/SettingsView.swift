@@ -5,6 +5,8 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var updater: UpdaterController
+    @StateObject private var cloudflareSetup = CloudflareProvisioner()
+    @State private var cloudflareToken = ""
     var onBack: () -> Void = {}
 
     private var prefs: Preferences { app.preferences }
@@ -183,6 +185,13 @@ struct SettingsView: View {
                 }
             }
 
+            // One-click Cloudflare setup: paste a single token, Cue provisions
+            // storage, database, and the share server by itself.
+            if settings.backend == .cueServer {
+                cloudflareCard
+                    .onAppear { cloudflareSetup.bootstrap(settings: settings) }
+            }
+
             // The web player / share server (the Cloudflare Worker, or local Node).
             if settings.backend == .cueServer {
                 Card("Server") {
@@ -202,6 +211,126 @@ struct SettingsView: View {
                     Field("Secret key", \.secretKey, "", secure: true)
                     Caption("For Cloudflare R2, Region must be “auto”. The secret key is stored in the macOS Keychain.")
                 }
+            }
+        }
+    }
+
+    // MARK: Cloudflare one-click setup
+
+    @ViewBuilder
+    private var cloudflareCard: some View {
+        Card("Cloudflare — automatic setup") {
+            switch cloudflareSetup.phase {
+            case .idle:
+                Caption("Cue can set up free Cloudflare sharing for you: storage, database, and your own share server — no manual configuration.")
+                RowButton("Set up automatically…", system: "wand.and.stars") {
+                    NSWorkspace.shared.open(CloudflareProvisioner.tokenCreationURL)
+                    cloudflareSetup.beginTokenEntry()
+                }
+                Divider().opacity(0.5)
+                RowButton("Create a free Cloudflare account…", system: "person.badge.plus") {
+                    NSWorkspace.shared.open(CloudflareProvisioner.signupURL)
+                }
+                Caption("No account yet? Create one first, then come back and choose “Set up automatically”.")
+
+            case .enteringToken:
+                Caption("Your browser opened a Cloudflare page with a ready-made token. Click “Continue to summary”, then “Create Token”, copy the token, and paste it here.")
+                SecureField("", text: $cloudflareToken, prompt: Text("Paste the token"))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .padding(.vertical, 4)
+                HStack(spacing: 10) {
+                    Button("Connect") { cloudflareSetup.connect(token: cloudflareToken) }
+                        .disabled(cloudflareToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Spacer()
+                    Button("Cancel") {
+                        cloudflareToken = ""
+                        cloudflareSetup.cancel()
+                    }
+                }
+                .controlSize(.small)
+                .padding(.vertical, 9)
+                Divider().opacity(0.5)
+                RowButton("Open the token page again", system: "arrow.up.forward.app") {
+                    NSWorkspace.shared.open(CloudflareProvisioner.tokenCreationURL)
+                }
+
+            case .selectingAccount(let accounts):
+                Caption("The token can reach more than one Cloudflare account. Pick where Cue should set up sharing.")
+                ForEach(accounts) { account in
+                    RowButton(account.name, system: "building.2") {
+                        cloudflareSetup.continueWith(account: account)
+                    }
+                }
+                Divider().opacity(0.5)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { cloudflareSetup.cancel() }.controlSize(.small)
+                }
+                .padding(.vertical, 9)
+
+            case .running(let current):
+                ForEach(CloudflareProvisioner.Step.allCases, id: \.rawValue) { step in
+                    HStack(spacing: 9) {
+                        if step < current {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(Theme.accent)
+                        } else if step == current {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "circle")
+                                .foregroundStyle(Theme.tertiaryText)
+                        }
+                        Text(step.title)
+                            .font(.cueRowTitle)
+                            .foregroundStyle(step <= current ? Theme.primaryText : Theme.tertiaryText)
+                        Spacer()
+                    }
+                    .frame(minHeight: 26)
+                }
+                Caption("Setting things up on your Cloudflare account. This usually takes under a minute.")
+
+            case .failed(let step, let message, let help):
+                HStack(spacing: 9) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                    Text(step.title).font(.cueRowTitle).foregroundStyle(Theme.primaryText)
+                    Spacer()
+                }
+                .padding(.vertical, 8)
+                Caption(message)
+                if case .enableR2(let accountId) = help {
+                    RowButton("Enable R2 storage in Cloudflare…", system: "arrow.up.forward.app") {
+                        NSWorkspace.shared.open(CloudflareProvisioner.r2PlanURL(accountId: accountId))
+                    }
+                }
+                HStack(spacing: 10) {
+                    Button("Try Again") { cloudflareSetup.retry() }
+                    Spacer()
+                    Button("Cancel") { cloudflareSetup.cancel() }
+                }
+                .controlSize(.small)
+                .padding(.vertical, 9)
+
+            case .connected(let workerURL):
+                HStack(spacing: 9) {
+                    Image(systemName: "checkmark.seal.fill").foregroundStyle(Theme.accent)
+                    Text("Connected").font(.cueRowTitle).foregroundStyle(Theme.primaryText)
+                    Spacer()
+                }
+                .padding(.vertical, 8)
+                Caption("Your recordings share at \(workerURL). The fields below were filled in automatically — you normally don't need to touch them.")
+                Divider().opacity(0.5)
+                RowButton("Run setup again…", system: "arrow.clockwise") {
+                    cloudflareSetup.reprovision()
+                }
+                Caption("Re-checks everything and publishes this app version's share server — useful after an update.")
+                Divider().opacity(0.5)
+                RowButton("Forget Cloudflare token", system: "xmark.circle") {
+                    cloudflareToken = ""
+                    cloudflareSetup.forgetToken()
+                }
+                Caption("Forgetting the token only stops automatic setup — sharing keeps working with the settings below.")
             }
         }
     }

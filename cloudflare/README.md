@@ -46,6 +46,40 @@ viewers) is what makes "free" video hosting expensive everywhere else.
 
 ---
 
+## Zero-setup from the app (recommended)
+
+You don't need any of the manual steps below to get started: in Cue choose
+**Settings → Sharing → Cue server → Set up automatically…**. The app opens a
+Cloudflare page with a ready-made API token template; you click **Create
+Token**, paste the one string back into Cue, and the app provisions everything
+itself — R2 bucket, D1 database + schema, the Worker (bundled into the app),
+its secrets, and the `workers.dev` share link. The S3 upload keys are derived
+from the same token (access key = token id, secret = SHA-256 of the token), so
+nothing else is ever typed.
+
+Notes:
+
+- **Account creation can't be automated** — Cloudflare has no signup API
+  (browser check + ToS + email verification), so the app sends you to the
+  signup page first if needed.
+- **R2 needs a one-time free activation** with a card on file; setup detects
+  this, deep-links you to the R2 plan page, and resumes on Retry.
+- The app deploys a prebuilt copy of this Worker
+  (`Cue/Upload/CloudflareProvisioning/CueWorker.js` + `CueSchema.sql`). After
+  changing `src/` or `schema.sql`, regenerate them with
+  `npm run sync:app-resources`.
+- **Run setup again** in the app re-deploys that bundled Worker over the
+  existing one — that's the upgrade path for app-managed deployments. When the
+  Worker already exists (including wrangler-managed deploys), the app uploads
+  with `keep_bindings`, so vars and secrets it doesn't manage — Cloudflare
+  Access settings, `MEDIA_PUBLIC_BASE`, extra secrets — survive; custom-domain
+  routes are separate config and are never touched.
+
+The manual path below remains fully supported and is what you want for custom
+domains, Cloudflare Access, and self-hosted tweaks.
+
+---
+
 ## Before you start
 
 - A **Cloudflare account** (free) — sign up at [dash.cloudflare.com](https://dash.cloudflare.com).

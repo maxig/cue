@@ -20,6 +20,7 @@ Full incident history and deeper capture rules live in the `cue-macos-recorder` 
 - `Capture/` — `ScreenRecorder` (ScreenCaptureKit), `CameraEngine`, `DeviceManager`
 - `Recording/` — `RecordingEngine` (track writers), `VideoComposer` (compositing — must sustain the configured 30/60 fps, and raw camera frames are preserved, never baked flat: post-record camera reposition is a feature), `CameraMatte`, `RecordingStore`
 - `Upload/` — `UploadService` protocol with `LocalStubUploadService` (default), `MinIOUploadService`, `CueBackendUploadService`; SigV4 via CryptoKit; `Keychain`, `UploadSettings` (backend picker)
+- `Upload/CloudflareProvisioning/` — one-click Cloudflare setup: paste one API token (pre-filled dashboard template), the app provisions R2 + D1 + schema + Worker + secrets + workers.dev via REST and derives the S3 keys from the token (access key = token id, secret = SHA-256 of token). `CueWorker.js`/`CueSchema.sql` are **generated** from `cloudflare/` — regenerate with `cd cloudflare && npm run sync:app-resources` after any Worker/schema change; never edit them directly.
 - `DesignSystem/` — `Theme`, `Components`, `LiquidGlass` (macOS 26 Liquid Glass APIs, availability-gated)
 - `Permissions/` — `PermissionsManager` (TCC: Screen Recording, Microphone, Camera) + `OnboardingView`. Prompt before capture starts, never mid-flow; degrade gracefully (e.g. record without camera).
 - `Library/` — `LibraryView` local recordings browser

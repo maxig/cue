@@ -157,6 +157,28 @@ final class MinIOUploadService: UploadService {
         }
     }
 
+    /// Writes and deletes a tiny probe object to prove the credentials allow
+    /// bucket writes — used by one-click Cloudflare setup before saving them.
+    func verifyAccess() async throws {
+        guard isConfigured, let base = URL(string: config.endpoint) else {
+            throw UploadError.notConfigured("endpoint / bucket / credentials")
+        }
+        let target = try objectTarget(base: base, objectKey: "setup-probe/cue-probe.txt")
+        let payload = Data("cue setup probe".utf8)
+        var put = URLRequest(url: target.url)
+        put.httpMethod = "PUT"
+        put.setValue("text/plain", forHTTPHeaderField: "Content-Type")
+        signV4(&put, path: target.path, canonicalQuery: "", payloadHash: Self.sha256Hex(payload))
+        let (putData, putResponse) = try await Self.uploadWithRetry(put, data: payload)
+        try Self.requireSuccess(data: putData, response: putResponse)
+
+        var delete = URLRequest(url: target.url)
+        delete.httpMethod = "DELETE"
+        signV4(&delete, path: target.path, canonicalQuery: "", payloadHash: Self.sha256Hex(Data()))
+        let (deleteData, deleteResponse) = try await Self.dataWithRetry(delete)
+        try Self.requireSuccess(data: deleteData, response: deleteResponse)
+    }
+
     /// Removes the local "object completed" marker after the Cue metadata record
     /// has also been finalized. Until then, a registration retry skips re-sending
     /// an already uploaded multi-gigabyte movie.
