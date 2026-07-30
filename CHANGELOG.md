@@ -4,6 +4,14 @@ The `## <version> — <date>` section matching a release tag becomes the GitHub
 release body **and** the in-app Sparkle update notes. Write it for users:
 what changed and why they'd care, not commit titles.
 
+## 1.4.2 — 2026-07-30
+
+A small polish pass on the new settings tabs.
+
+- The tab bar is cleaner and easier to read: tab labels now line up evenly,
+  and the selected tab is highlighted with a subtle accent tint instead of a
+  heavy bordered pill.
+
 ## 1.4.1 — 2026-07-30
 
 Settings no longer scrolls forever in the small popover window.

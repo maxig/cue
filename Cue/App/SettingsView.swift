@@ -320,8 +320,10 @@ struct SettingsView: View {
 
 // MARK: - Building blocks
 
-/// Icon-over-label variant of `GlassSegmentedControl` — five tabs don't fit
-/// side-by-side as text in the 320pt popover.
+/// Icon-over-label tab strip — five tabs don't fit side-by-side as text in
+/// the 320pt popover. Deliberately flat (no glass box): the selected tab is a
+/// single soft accent pill, and every icon gets the same fixed box so labels
+/// share one baseline regardless of each symbol's intrinsic height.
 private struct SettingsTabBar: View {
     @Binding var selection: SettingsTab
     @Namespace private var ns
@@ -335,26 +337,22 @@ private struct SettingsTabBar: View {
                         selection = tab
                     }
                 } label: {
-                    VStack(spacing: 3) {
+                    VStack(spacing: 4) {
                         Image(systemName: tab.systemImage)
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(height: 16)
                         Text(tab.title)
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.system(size: 9.5, weight: .semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.85)
                     }
                     .foregroundStyle(isSelected ? Theme.accent : Theme.secondaryText)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 7)
                     .background {
                         if isSelected {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(.thinMaterial)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .stroke(.white.opacity(0.18), lineWidth: 0.5)
-                                )
-                                .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Theme.accent.opacity(0.14))
                                 .matchedGeometryEffect(id: "selectedTab", in: ns)
                         }
                     }
@@ -365,8 +363,6 @@ private struct SettingsTabBar: View {
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
-        .padding(3)
-        .liquidGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
