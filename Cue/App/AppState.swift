@@ -80,6 +80,11 @@ final class AppState: ObservableObject {
     /// Whether the popover is currently showing the Settings screen.
     @Published var showSettings = false
 
+    /// Selected settings tab. Lives here rather than view `@State` so the
+    /// choice survives popover teardowns — e.g. mid Cloudflare setup, which
+    /// opens the browser and closes the popover.
+    @Published var settingsTab: SettingsTab = .recording
+
     // Sharing / library surface
     @Published var uploadProgress: [UUID: Double] = [:]
     /// Id of the recording currently being re-rendered (post-record studio edit).

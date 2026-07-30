@@ -1,7 +1,36 @@
 import SwiftUI
 
+/// The five settings sections, shown as a compact icon tab bar so the popover
+/// never becomes one endless scroll.
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case recording, camera, canvas, sharing, general
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .recording: return "Recording"
+        case .camera: return "Camera"
+        case .canvas: return "Canvas"
+        case .sharing: return "Sharing"
+        case .general: return "General"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .recording: return "record.circle"
+        case .camera: return "web.camera"
+        case .canvas: return "aspectratio"
+        case .sharing: return "square.and.arrow.up"
+        case .general: return "gearshape"
+        }
+    }
+}
+
 /// Settings shown as a screen *inside* the popover (pushed over the recorder),
-/// with a back button — not a separate window.
+/// with a back button — not a separate window. Sections are split across tabs;
+/// only the active tab's cards are on screen.
 struct SettingsView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var updater: UpdaterController
@@ -12,22 +41,39 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            SettingsTabBar(selection: $app.settingsTab)
+                .padding(.horizontal, Theme.Spacing.lg)
+                .padding(.top, 8)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    formatCard
-                    recordingCard
-                    cameraCard
-                    backgroundCard
-                    sharingCard
-                    generalCard
+                    tabContent
                 }
                 .padding(.horizontal, Theme.Spacing.lg)
                 .padding(.vertical, 16)
             }
+            // New identity per tab so each opens scrolled to the top.
+            .id(app.settingsTab)
             .frame(maxHeight: 540)
         }
         .frame(width: Theme.popoverWidth)
         .background(VisualEffectBlur(material: .popover, blendingMode: .behindWindow))
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch app.settingsTab {
+        case .recording:
+            recordingCard
+        case .camera:
+            cameraCard
+        case .canvas:
+            formatCard
+            backgroundCard
+        case .sharing:
+            sharingCard
+        case .general:
+            generalCard
+        }
     }
 
     // MARK: Header
@@ -273,6 +319,56 @@ struct SettingsView: View {
 }
 
 // MARK: - Building blocks
+
+/// Icon-over-label variant of `GlassSegmentedControl` — five tabs don't fit
+/// side-by-side as text in the 320pt popover.
+private struct SettingsTabBar: View {
+    @Binding var selection: SettingsTab
+    @Namespace private var ns
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(SettingsTab.allCases) { tab in
+                let isSelected = tab == selection
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        selection = tab
+                    }
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: tab.systemImage)
+                            .font(.system(size: 13, weight: .medium))
+                        Text(tab.title)
+                            .font(.system(size: 9, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                    }
+                    .foregroundStyle(isSelected ? Theme.accent : Theme.secondaryText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .fill(.thinMaterial)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .stroke(.white.opacity(0.18), lineWidth: 0.5)
+                                )
+                                .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+                                .matchedGeometryEffect(id: "selectedTab", in: ns)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
+        .padding(3)
+        .liquidGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
 
 private struct CanvasBackgroundPicker: View {
     @Binding var selection: CanvasBackground
