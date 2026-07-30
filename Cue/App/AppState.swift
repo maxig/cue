@@ -14,6 +14,10 @@ final class AppState: ObservableObject {
     let devices = DeviceManager()
     let store = RecordingStore()
     let uploadSettings = UploadSettings()
+    /// Owned here, not by the settings view: the popover closes (and its views
+    /// are torn down) the moment the setup flow opens the browser, and the
+    /// in-flight setup state must survive that.
+    let cloudflareSetup = CloudflareProvisioner()
     let preferences = Preferences()
     let overlay = OverlayController()
     let cameraEngine = CameraEngine()

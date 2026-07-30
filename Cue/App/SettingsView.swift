@@ -5,10 +5,6 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var updater: UpdaterController
-    @StateObject private var cloudflareSetup = CloudflareProvisioner()
-    @State private var cloudflareToken = ""
-    @State private var selectedZoneID = ""
-    @State private var subdomainLabel = "cue"
     var onBack: () -> Void = {}
 
     private var prefs: Preferences { app.preferences }
@@ -190,8 +186,7 @@ struct SettingsView: View {
             // One-click Cloudflare setup: paste a single token, Cue provisions
             // storage, database, and the share server by itself.
             if settings.backend == .cueServer {
-                cloudflareCard
-                    .onAppear { cloudflareSetup.bootstrap(settings: settings) }
+                CloudflareSetupSection(provisioner: app.cloudflareSetup, settings: settings)
             }
 
             // The web player / share server (the Cloudflare Worker, or local Node).
@@ -217,17 +212,31 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: Cloudflare one-click setup
+    /// The Cloudflare setup card. Its model lives on AppState because the
+    /// popover (and every view in it) is torn down the moment setup opens the
+    /// browser; the in-flight flow state has to outlive that.
+    private struct CloudflareSetupSection: View {
+        @ObservedObject var provisioner: CloudflareProvisioner
+        let settings: UploadSettings
+        @State private var token = ""
+        @State private var selectedZoneID = ""
+        @State private var subdomainLabel = "cue"
 
-    @ViewBuilder
-    private var cloudflareCard: some View {
-        Card("Cloudflare — automatic setup") {
-            switch cloudflareSetup.phase {
+        var body: some View {
+            Card("Cloudflare — automatic setup") {
+                content
+            }
+            .onAppear { provisioner.bootstrap(settings: settings) }
+        }
+
+        @ViewBuilder
+        private var content: some View {
+            switch provisioner.phase {
             case .idle:
                 Caption("Cue can set up free Cloudflare sharing for you: storage, database, and your own share server — no manual configuration.")
                 RowButton("Set up automatically…", system: "wand.and.stars") {
                     NSWorkspace.shared.open(CloudflareProvisioner.tokenCreationURL)
-                    cloudflareSetup.beginTokenEntry()
+                    provisioner.beginTokenEntry()
                 }
                 Divider().opacity(0.5)
                 RowButton("Create a free Cloudflare account…", system: "person.badge.plus") {
@@ -237,17 +246,17 @@ struct SettingsView: View {
 
             case .enteringToken:
                 Caption("Your browser opened a Cloudflare page with a ready-made token. Click “Continue to summary”, then “Create Token”, copy the token, and paste it here.")
-                SecureField("", text: $cloudflareToken, prompt: Text("Paste the token"))
+                SecureField("", text: $token, prompt: Text("Paste the token"))
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
                     .padding(.vertical, 4)
                 HStack(spacing: 10) {
-                    Button("Connect") { cloudflareSetup.connect(token: cloudflareToken) }
-                        .disabled(cloudflareToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Connect") { provisioner.connect(token: token) }
+                        .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Spacer()
                     Button("Cancel") {
-                        cloudflareToken = ""
-                        cloudflareSetup.cancel()
+                        token = ""
+                        provisioner.cancel()
                     }
                 }
                 .controlSize(.small)
@@ -261,13 +270,13 @@ struct SettingsView: View {
                 Caption("The token can reach more than one Cloudflare account. Pick where Cue should set up sharing.")
                 ForEach(accounts) { account in
                     RowButton(account.name, system: "building.2") {
-                        cloudflareSetup.continueWith(account: account)
+                        provisioner.continueWith(account: account)
                     }
                 }
                 Divider().opacity(0.5)
                 HStack {
                     Spacer()
-                    Button("Cancel") { cloudflareSetup.cancel() }.controlSize(.small)
+                    Button("Cancel") { provisioner.cancel() }.controlSize(.small)
                 }
                 .padding(.vertical, 9)
 
@@ -307,9 +316,9 @@ struct SettingsView: View {
                     }
                 }
                 HStack(spacing: 10) {
-                    Button("Try Again") { cloudflareSetup.retry() }
+                    Button("Try Again") { provisioner.retry() }
                     Spacer()
-                    Button("Cancel") { cloudflareSetup.cancel() }
+                    Button("Cancel") { provisioner.cancel() }
                 }
                 .controlSize(.small)
                 .padding(.vertical, 9)
@@ -326,88 +335,88 @@ struct SettingsView: View {
                 domainSection
                 Divider().opacity(0.5)
                 RowButton("Run setup again…", system: "arrow.clockwise") {
-                    cloudflareSetup.reprovision()
+                    provisioner.reprovision()
                 }
                 Caption("Re-checks everything and publishes this app version's share server — useful after an update.")
                 Divider().opacity(0.5)
                 RowButton("Forget Cloudflare token", system: "xmark.circle") {
-                    cloudflareToken = ""
-                    cloudflareSetup.forgetToken()
+                    token = ""
+                    provisioner.forgetToken()
                 }
                 Caption("Forgetting the token only stops automatic setup — sharing keeps working with the settings below.")
             }
         }
-    }
 
-    /// Inside the connected card: move the share link onto one of the
-    /// account's own domains, entirely from within Settings.
-    @ViewBuilder
-    private var domainSection: some View {
-        switch cloudflareSetup.domainPhase {
-        case .idle:
-            RowButton("Use your own domain…", system: "globe") {
-                cloudflareSetup.beginDomainSelection()
-            }
-
-        case .loadingZones:
-            HStack(spacing: 9) {
-                ProgressView().controlSize(.small)
-                Text("Looking up your domains…").font(.cueRowTitle).foregroundStyle(Theme.secondaryText)
-                Spacer()
-            }
-            .padding(.vertical, 10)
-
-        case .choosing(let zones):
-            Caption("Pick a domain and a subdomain for your share links. Cloudflare creates the address and certificate automatically.")
-            Picker("", selection: $selectedZoneID) {
-                ForEach(zones) { zone in Text(zone.name).tag(zone.id) }
-            }
-            .labelsHidden()
-            .onAppear { if selectedZoneID.isEmpty { selectedZoneID = zones.first?.id ?? "" } }
-            HStack(spacing: 6) {
-                TextField("", text: $subdomainLabel, prompt: Text("cue"))
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
-                    .frame(width: 90)
-                Text("." + (zones.first(where: { $0.id == selectedZoneID })?.name ?? ""))
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.secondaryText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-            }
-            .padding(.vertical, 4)
-            HStack(spacing: 10) {
-                Button("Connect domain") {
-                    if let zone = zones.first(where: { $0.id == selectedZoneID }) {
-                        cloudflareSetup.attachDomain(zone: zone, subdomain: subdomainLabel)
-                    }
+        /// Inside the connected card: move the share link onto one of the
+        /// account's own domains, entirely from within Settings.
+        @ViewBuilder
+        private var domainSection: some View {
+            switch provisioner.domainPhase {
+            case .idle:
+                RowButton("Use your own domain…", system: "globe") {
+                    provisioner.beginDomainSelection()
                 }
-                .disabled(selectedZoneID.isEmpty || subdomainLabel.trimmingCharacters(in: .whitespaces).isEmpty)
-                Spacer()
-                Button("Cancel") { cloudflareSetup.cancelDomainSelection() }
-            }
-            .controlSize(.small)
-            .padding(.vertical, 9)
 
-        case .attaching(let hostname):
-            HStack(spacing: 9) {
-                ProgressView().controlSize(.small)
-                Text("Setting up \(hostname)…").font(.cueRowTitle).foregroundStyle(Theme.primaryText)
-                Spacer()
-            }
-            .padding(.vertical, 10)
-            Caption("Creating the address and its certificate. This can take a few minutes on a brand-new subdomain.")
+            case .loadingZones:
+                HStack(spacing: 9) {
+                    ProgressView().controlSize(.small)
+                    Text("Looking up your domains…").font(.cueRowTitle).foregroundStyle(Theme.secondaryText)
+                    Spacer()
+                }
+                .padding(.vertical, 10)
 
-        case .failed(let message):
-            Caption(message)
-            HStack(spacing: 10) {
-                Button("Try Again") { cloudflareSetup.beginDomainSelection() }
-                Spacer()
-                Button("Cancel") { cloudflareSetup.cancelDomainSelection() }
+            case .choosing(let zones):
+                Caption("Pick a domain and a subdomain for your share links. Cloudflare creates the address and certificate automatically.")
+                Picker("", selection: $selectedZoneID) {
+                    ForEach(zones) { zone in Text(zone.name).tag(zone.id) }
+                }
+                .labelsHidden()
+                .onAppear { if selectedZoneID.isEmpty { selectedZoneID = zones.first?.id ?? "" } }
+                HStack(spacing: 6) {
+                    TextField("", text: $subdomainLabel, prompt: Text("cue"))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                        .frame(width: 90)
+                    Text("." + (zones.first(where: { $0.id == selectedZoneID })?.name ?? ""))
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.secondaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+                HStack(spacing: 10) {
+                    Button("Connect domain") {
+                        if let zone = zones.first(where: { $0.id == selectedZoneID }) {
+                            provisioner.attachDomain(zone: zone, subdomain: subdomainLabel)
+                        }
+                    }
+                    .disabled(selectedZoneID.isEmpty || subdomainLabel.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Spacer()
+                    Button("Cancel") { provisioner.cancelDomainSelection() }
+                }
+                .controlSize(.small)
+                .padding(.vertical, 9)
+
+            case .attaching(let hostname):
+                HStack(spacing: 9) {
+                    ProgressView().controlSize(.small)
+                    Text("Setting up \(hostname)…").font(.cueRowTitle).foregroundStyle(Theme.primaryText)
+                    Spacer()
+                }
+                .padding(.vertical, 10)
+                Caption("Creating the address and its certificate. This can take a few minutes on a brand-new subdomain.")
+
+            case .failed(let message):
+                Caption(message)
+                HStack(spacing: 10) {
+                    Button("Try Again") { provisioner.beginDomainSelection() }
+                    Spacer()
+                    Button("Cancel") { provisioner.cancelDomainSelection() }
+                }
+                .controlSize(.small)
+                .padding(.vertical, 9)
             }
-            .controlSize(.small)
-            .padding(.vertical, 9)
         }
     }
 
