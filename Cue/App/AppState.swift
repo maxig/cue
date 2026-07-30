@@ -18,6 +18,9 @@ final class AppState: ObservableObject {
     /// are torn down) the moment the setup flow opens the browser, and the
     /// in-flight setup state must survive that.
     let cloudflareSetup = CloudflareProvisioner()
+    /// Onboarding progress lives here for the same reason — the Cloudflare
+    /// step opens the browser, which closes the popover mid-flow.
+    @Published var onboardingStep: OnboardingStep = .intro
     let preferences = Preferences()
     let overlay = OverlayController()
     let cameraEngine = CameraEngine()

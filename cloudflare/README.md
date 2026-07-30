@@ -80,6 +80,14 @@ on your Cloudflare account and attaches the share server to a subdomain you
 pick (Workers Custom Domains — DNS record and certificate are created
 automatically), so share links live on your domain instead of workers.dev.
 
+If you give Cue your email (asked during onboarding, editable in Settings),
+setup also unlocks the **web library** at `/app`: it provisions Cloudflare
+Access with the one-time-PIN login (Zero Trust org + IdP + an Access app for
+`<host>/app` admitting only your email) and feeds the team domain + AUD to the
+Worker. Without an email, `/app` simply stays sealed (fail-closed) and the
+native Library is the owner UI. An Access app that already exists for that
+hostname is reused untouched, so dashboard-managed policies survive re-runs.
+
 The manual path below remains fully supported and is what you want for
 Cloudflare Access and self-hosted tweaks.
 

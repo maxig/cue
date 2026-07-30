@@ -17,6 +17,8 @@ final class CloudflareProvisioner: ObservableObject {
         case verifyToken
         case createBucket
         case createDatabase
+        case prepareAddress
+        case protectDashboard
         case deployWorker
         case enableLink
         case verify
@@ -26,6 +28,8 @@ final class CloudflareProvisioner: ObservableObject {
             case .verifyToken: return "Checking the token"
             case .createBucket: return "Creating video storage"
             case .createDatabase: return "Creating the database"
+            case .prepareAddress: return "Choosing the share address"
+            case .protectDashboard: return "Locking the web library"
             case .deployWorker: return "Publishing your share server"
             case .enableLink: return "Turning on the share link"
             case .verify: return "Testing everything end to end"
@@ -64,6 +68,11 @@ final class CloudflareProvisioner: ObservableObject {
 
     @Published private(set) var domainPhase: DomainPhase = .idle
 
+    /// Set when the web-library lock could not be configured. Setup still
+    /// succeeds — sharing works and /app stays safely sealed — but the notice
+    /// tells the user why the browser dashboard isn't available yet.
+    @Published private(set) var dashboardNotice: String?
+
     static let bucketName = "cue"
     static let databaseName = "cue"
     static let scriptName = "cue"
@@ -84,6 +93,8 @@ final class CloudflareProvisioner: ObservableObject {
             ["key": "zone", "type": "read"],              // list domains for a custom address
             ["key": "workers_routes", "type": "edit"],    // attach the Worker to a domain
             ["key": "dns", "type": "edit"],               // let Cloudflare create the DNS record
+            ["key": "access", "type": "edit"],            // the /app email-lock application
+            ["key": "access_acct", "type": "edit"],       // Zero Trust org + one-time PIN login
         ]
         let json = String(
             data: try! JSONSerialization.data(withJSONObject: permissions),
@@ -216,6 +227,11 @@ final class CloudflareProvisioner: ObservableObject {
                 settings.backendBaseURL = "https://\(hostname)"
                 domainPhase = .idle
                 phase = .connected(workerURL: settings.backendBaseURL)
+                // The web-library lock is per-hostname; re-run the (idempotent)
+                // pipeline so it covers the new address too.
+                if !settings.ownerEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    reprovision()
+                }
             } catch {
                 domainPhase = .failed(domainMessage(for: error))
             }
@@ -311,7 +327,33 @@ final class CloudflareProvisioner: ObservableObject {
             try await api.d1Query(accountId: accountId, databaseId: databaseId,
                                   sql: try bundledResource("CueSchema", extension: "sql"))
 
-            // 4. Worker deploy. Secrets ship in the same call; the derived S3
+            // 4. Where the share server will live. A custom domain already
+            // attached to this Worker wins; otherwise the account's workers.dev
+            // subdomain (created when missing). Resolved before deploy so the
+            // web-library lock can be minted for the right hostname.
+            step = .prepareAddress
+            phase = .running(step)
+            let host = try await resolveHost(api, accountId: accountId, settings: settings)
+
+            // 5. Optional email lock for /app. A failure here never sinks the
+            // whole setup — sharing works without the browser dashboard, and
+            // /app stays sealed either way — so it degrades to a notice.
+            step = .protectDashboard
+            phase = .running(step)
+            var accessVars: (team: String, aud: String)?
+            let ownerEmail = settings.ownerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !ownerEmail.isEmpty {
+                do {
+                    accessVars = try await configureAccess(api, accountId: accountId,
+                                                           host: host, email: ownerEmail)
+                    dashboardNotice = nil
+                } catch {
+                    dashboardNotice = accessNotice(for: error)
+                }
+            }
+            settings.accessConfigured = accessVars != nil
+
+            // 6. Worker deploy. Secrets ship in the same call; the derived S3
             // keys also go to the Worker so share links serve media through
             // short-lived presigned URLs (revocable when a link is disabled).
             step = .deployWorker
@@ -337,6 +379,12 @@ final class CloudflareProvisioner: ObservableObject {
                     ["type": "secret_text", "name": "R2_SECRET_ACCESS_KEY", "text": s3SecretKey],
                 ],
             ]
+            if let accessVars {
+                var bindings = metadata["bindings"] as? [[String: Any]] ?? []
+                bindings.append(["type": "plain_text", "name": "ACCESS_TEAM_DOMAIN", "text": accessVars.team])
+                bindings.append(["type": "plain_text", "name": "ACCESS_AUD", "text": accessVars.aud])
+                metadata["bindings"] = bindings
+            }
             // Updating an existing deployment (wrangler-managed or an earlier
             // setup run): inherit vars and secrets this metadata doesn't set —
             // explicit bindings above still win by name — so custom
@@ -350,22 +398,14 @@ final class CloudflareProvisioner: ObservableObject {
                                              metadata: metadata,
                                              moduleSource: Data(script.utf8))
 
-            // 5. Public workers.dev link.
+            // 7. Public link live on workers.dev (kept on even with a custom
+            // domain, mirroring the manual wrangler config).
             step = .enableLink
             phase = .running(step)
-            var subdomain = try await api.workersSubdomain(accountId: accountId)
-            if subdomain == nil {
-                let generated = "cue-" + Self.randomToken(bytes: 3)
-                try await api.setWorkersSubdomain(accountId: accountId, name: generated)
-                subdomain = generated
-            }
-            guard let subdomain else {
-                throw SetupError("Could not register a workers.dev address for the account.")
-            }
             try await api.enableWorkersDev(accountId: accountId, scriptName: Self.scriptName)
-            let workerURL = "https://\(Self.scriptName).\(subdomain).workers.dev"
+            let workerURL = "https://\(host)"
 
-            // 6. Prove the whole path before saving anything: S3 write with the
+            // 8. Prove the whole path before saving anything: S3 write with the
             // derived keys, then the deployed API with the owner token.
             step = .verify
             phase = .running(step)
@@ -380,7 +420,7 @@ final class CloudflareProvisioner: ObservableObject {
             try await MinIOUploadService(config: s3Config).verifyAccess()
             try await Self.waitForWorker(url: workerURL, ownerToken: ownerToken)
 
-            // 7. Persist the complete configuration in one go.
+            // 9. Persist the complete configuration in one go.
             settings.backend = .cueServer
             settings.endpoint = s3Config.endpoint
             settings.region = s3Config.region
@@ -396,6 +436,76 @@ final class CloudflareProvisioner: ObservableObject {
         } catch {
             phase = .failed(step, message: friendlyMessage(for: error), help: nil)
         }
+    }
+
+    /// The hostname setup should build everything around: a custom domain
+    /// already attached to this Worker (so a wrangler-managed setup keeps its
+    /// address), else the account's workers.dev subdomain, created if missing.
+    private func resolveHost(_ api: CloudflareAPI, accountId: String, settings: UploadSettings) async throws -> String {
+        if let url = URL(string: settings.backendBaseURL), url.scheme == "https", let candidate = url.host {
+            let attached = try await api.workerDomains(accountId: accountId)
+            if attached.contains(where: { $0.hostname == candidate && $0.service == Self.scriptName }) {
+                return candidate
+            }
+        }
+        var subdomain = try await api.workersSubdomain(accountId: accountId)
+        if subdomain == nil {
+            let generated = "cue-" + Self.randomToken(bytes: 3)
+            try await api.setWorkersSubdomain(accountId: accountId, name: generated)
+            subdomain = generated
+        }
+        guard let subdomain else {
+            throw SetupError("Could not register a workers.dev address for the account.")
+        }
+        return "\(Self.scriptName).\(subdomain).workers.dev"
+    }
+
+    /// Zero Trust org (created when missing) + one-time PIN sign-in + the
+    /// Access application guarding `<host>/app` for `email`. Returns the two
+    /// values the Worker needs to trust that login.
+    private func configureAccess(
+        _ api: CloudflareAPI,
+        accountId: String,
+        host: String,
+        email: String
+    ) async throws -> (team: String, aud: String) {
+        var org = try await api.accessOrganization(accountId: accountId)
+        if org?.authDomain?.isEmpty != false {
+            for attempt in 0..<3 {
+                do {
+                    org = try await api.createAccessOrganization(
+                        accountId: accountId, name: "Cue",
+                        authDomain: "cue-\(Self.randomToken(bytes: 4)).cloudflareaccess.com")
+                    break
+                } catch let failure as CloudflareAPI.RequestFailure
+                            where attempt < 2 && failure.messageContains(["exists", "taken", "unique", "already"]) {
+                    continue
+                }
+            }
+        }
+        guard let team = org?.authDomain, !team.isEmpty else {
+            throw SetupError("Could not set up the Cloudflare sign-in service for the web library.")
+        }
+
+        let providers = try await api.accessIdentityProviders(accountId: accountId)
+        if !providers.contains(where: { $0.type == "onetimepin" }) {
+            try await api.createOneTimePinLogin(accountId: accountId)
+        }
+
+        let app = try await api.findOrCreateAccessApplication(accountId: accountId,
+                                                              hostname: host, allowEmail: email)
+        guard let aud = app.aud, !aud.isEmpty else {
+            throw SetupError("Cloudflare did not return the web library's app id.")
+        }
+        return (team, aud)
+    }
+
+    private func accessNotice(for error: Error) -> String {
+        if let failure = error as? CloudflareAPI.RequestFailure,
+           failure.status == 401 || failure.status == 403 {
+            return "The web library stays locked for now: the saved token can't manage sign-in (it was created before this feature). Run setup again with a fresh token to enable it."
+        }
+        return "The web library stays locked for now: \(friendlyMessage(for: error)) Sharing itself works — use “Run setup again” to retry."
     }
 
     /// Fresh workers.dev hostnames can take a little while to resolve; retry

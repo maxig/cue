@@ -144,6 +144,107 @@ struct CloudflareAPI {
                                                  "environment": "production"])
     }
 
+    /// Custom domains already attached to Workers on the account.
+    struct WorkerDomainRecord: Decodable {
+        let hostname: String?
+        let service: String?
+    }
+
+    func workerDomains(accountId: String) async throws -> [WorkerDomainRecord] {
+        do {
+            return try await requestOptional([WorkerDomainRecord].self, method: "GET",
+                                             path: "accounts/\(accountId)/workers/domains") ?? []
+        } catch let failure as RequestFailure where failure.status == 404 {
+            return []
+        }
+    }
+
+    // MARK: Access (Zero Trust) — the email lock in front of /app
+
+    struct AccessOrganization: Decodable {
+        let authDomain: String?
+        private enum CodingKeys: String, CodingKey { case authDomain = "auth_domain" }
+    }
+
+    func accessOrganization(accountId: String) async throws -> AccessOrganization? {
+        do {
+            return try await requestOptional(AccessOrganization.self, method: "GET",
+                                             path: "accounts/\(accountId)/access/organizations")
+        } catch let failure as RequestFailure where failure.status == 404 {
+            return nil
+        }
+    }
+
+    func createAccessOrganization(accountId: String, name: String, authDomain: String) async throws -> AccessOrganization {
+        try await request(AccessOrganization.self, method: "POST",
+                          path: "accounts/\(accountId)/access/organizations",
+                          jsonBody: ["name": name, "auth_domain": authDomain])
+    }
+
+    struct AccessIdentityProvider: Decodable {
+        let id: String?
+        let type: String?
+    }
+
+    func accessIdentityProviders(accountId: String) async throws -> [AccessIdentityProvider] {
+        do {
+            return try await requestOptional([AccessIdentityProvider].self, method: "GET",
+                                             path: "accounts/\(accountId)/access/identity_providers") ?? []
+        } catch let failure as RequestFailure where failure.status == 404 {
+            return []
+        }
+    }
+
+    /// Enables the "one-time PIN to your email" sign-in method.
+    func createOneTimePinLogin(accountId: String) async throws {
+        struct IdP: Decodable { let id: String? }
+        _ = try await requestOptional(IdP.self, method: "POST",
+                                      path: "accounts/\(accountId)/access/identity_providers",
+                                      jsonBody: ["name": "One-time PIN", "type": "onetimepin",
+                                                 "config": [String: String]()])
+    }
+
+    struct AccessApplication: Decodable {
+        let id: String?
+        let aud: String?
+        let domain: String?
+    }
+
+    func accessApplications(accountId: String) async throws -> [AccessApplication] {
+        do {
+            return try await requestOptional([AccessApplication].self, method: "GET",
+                                             path: "accounts/\(accountId)/access/apps",
+                                             query: [URLQueryItem(name: "per_page", value: "100")]) ?? []
+        } catch let failure as RequestFailure where failure.status == 404 {
+            return []
+        }
+    }
+
+    /// The Access application guarding `<hostname>/app`. An existing app is
+    /// reused untouched — its policies may have been customized in the
+    /// dashboard — otherwise one is created that admits only `allowEmail`.
+    func findOrCreateAccessApplication(accountId: String, hostname: String, allowEmail: String) async throws -> AccessApplication {
+        let domain = "\(hostname)/app"
+        if let existing = try await accessApplications(accountId: accountId)
+            .first(where: { $0.domain == domain }) {
+            return existing
+        }
+        return try await request(AccessApplication.self, method: "POST",
+                                 path: "accounts/\(accountId)/access/apps",
+                                 jsonBody: [
+                                     "name": "Cue web library",
+                                     "domain": domain,
+                                     "type": "self_hosted",
+                                     "session_duration": "24h",
+                                     "app_launcher_visible": false,
+                                     "policies": [[
+                                         "name": "Cue owner",
+                                         "decision": "allow",
+                                         "include": [["email": ["email": allowEmail]]],
+                                     ]],
+                                 ])
+    }
+
     /// Whether a Worker script with this name is already deployed.
     func workerScriptExists(accountId: String, scriptName: String) async throws -> Bool {
         struct Settings: Decodable {}

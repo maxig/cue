@@ -19,6 +19,8 @@ final class UploadSettings: ObservableObject {
         static let ownerTokenAccount = "cue.owner.token"
         static let cloudflareAccountId = "cue.cloudflare.accountId"
         static let cloudflareTokenAccount = "cue.cloudflare.apiToken"
+        static let ownerEmail = "cue.owner.email"
+        static let accessConfigured = "cue.cloudflare.accessConfigured"
     }
 
     @Published var backend: UploadBackend {
@@ -39,6 +41,11 @@ final class UploadSettings: ObservableObject {
     @Published var cloudflareAPIToken: String {
         didSet { Keychain.set(cloudflareAPIToken.isEmpty ? nil : cloudflareAPIToken, for: Key.cloudflareTokenAccount) }
     }
+    /// Email allowed into the web library (`/app`) — one-click setup locks the
+    /// dashboard behind a one-time code sent to this address.
+    @Published var ownerEmail: String { didSet { defaults.set(ownerEmail, forKey: Key.ownerEmail) } }
+    /// Whether one-click setup has successfully configured that email lock.
+    @Published var accessConfigured: Bool { didSet { defaults.set(accessConfigured, forKey: Key.accessConfigured) } }
 
     init() {
         backend = UploadBackend(rawValue: defaults.string(forKey: Key.backend) ?? "") ?? .localStub
@@ -52,6 +59,8 @@ final class UploadSettings: ObservableObject {
         ownerToken = Keychain.get(Key.ownerTokenAccount) ?? ""
         cloudflareAccountId = defaults.string(forKey: Key.cloudflareAccountId) ?? ""
         cloudflareAPIToken = Keychain.get(Key.cloudflareTokenAccount) ?? ""
+        ownerEmail = defaults.string(forKey: Key.ownerEmail) ?? ""
+        accessConfigured = defaults.bool(forKey: Key.accessConfigured)
     }
 
     var minioConfig: MinIOUploadService.Config {
