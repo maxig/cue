@@ -37,6 +37,18 @@ xcodebuild -project Cue.xcodeproj -scheme Cue -configuration Debug \
   -destination 'platform=macOS,arch=arm64' build
 ```
 
+## Releasing
+
+Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml` (sign,
+notarize, DMG + Sparkle appcast, GitHub release). The version comes from the
+tag — nothing to bump in the repo.
+
+1. **Always write release notes first**: add a `## X.Y.Z — YYYY-MM-DD` section
+   at the top of `CHANGELOG.md`, written for users (what changed, why they'd
+   care). It becomes the release body and the in-app update notes; without it
+   the release ships with meaningless auto-generated text.
+2. Commit, then: `git tag -a vX.Y.Z -m "Cue X.Y.Z" && git push origin main vX.Y.Z`
+
 ## Backends
 
 `cloudflare/` (production — cue.gordienok.com):

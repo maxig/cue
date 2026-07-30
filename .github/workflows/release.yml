@@ -153,6 +153,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           APP_PATH="$RUNNER_TEMP/export/Cue.app"
@@ -168,15 +169,33 @@ jobs:
             "$UPDATE_PATH/$ZIP_NAME"
           scripts/create_dmg.sh "$APP_PATH" "$DIST_PATH/$DMG_NAME"
 
-          if ! gh api \
-            --method POST \
-            "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
-            -f "tag_name=$RELEASE_TAG" \
-            -f "target_commitish=$GITHUB_SHA" \
-            --jq .body > "$NOTES_PATH"
-          then
-            printf '# Cue %s\n\nBuilt from commit %s.\n' \
-              "$VERSION" "$GITHUB_SHA" > "$NOTES_PATH"
+          # Release notes are the hand-written CHANGELOG.md section for this
+          # version — the release body and the in-app Sparkle update notes.
+          # Fall back to GitHub's generated notes, then to a bare commit
+          # stamp, so a missing entry never blocks a release.
+          if [[ -f CHANGELOG.md ]]; then
+            awk -v ver="$VERSION" '
+              /^## / {
+                if (found) exit
+                if ($2 == ver) found = 1
+                next
+              }
+              found { print }
+            ' CHANGELOG.md | sed -e '/./,$!d' > "$NOTES_PATH"
+          fi
+
+          if [[ ! -s "$NOTES_PATH" ]]; then
+            echo "::warning::No CHANGELOG.md entry for $VERSION — using generated notes."
+            if ! gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f "tag_name=$RELEASE_TAG" \
+              -f "target_commitish=$GITHUB_SHA" \
+              --jq .body > "$NOTES_PATH"
+            then
+              printf '# Cue %s\n\nBuilt from commit %s.\n' \
+                "$VERSION" "$GITHUB_SHA" > "$NOTES_PATH"
+            fi
           fi
 
           cp "$NOTES_PATH" "$UPDATE_PATH/Cue-${VERSION}.md"
