@@ -38,6 +38,7 @@ final class RecordingEngine: ObservableObject {
     /// landscape composition. Capture itself is identical either way — only the
     /// composition changes — so a clip can be reframed afterwards.
     private var creativeLayout: CreativeLayout?
+    private var screenRegion: ScreenRegion?
     /// The capture frame rate chosen at `start` (30 or 60). Remembered so the
     /// final composition is rendered at the same rate instead of a fixed 30.
     private var captureFPS: Int = 30
@@ -77,7 +78,8 @@ final class RecordingEngine: ObservableObject {
                aspectMode: AspectRatioMode,
                fps: Int = 30,
                cinematicEffects: Bool = true,
-               creativeLayout: CreativeLayout? = nil) async throws {
+               creativeLayout: CreativeLayout? = nil,
+               screenRegion: ScreenRegion? = nil) async throws {
         guard currentID == nil else { throw RecordingError.alreadyRecording }
 
         let id = UUID()
@@ -110,6 +112,7 @@ final class RecordingEngine: ObservableObject {
         // Pick the layout that can actually be rendered from what's being
         // captured: a camera-only clip has no screen to frame, and "just me"
         // needs a camera to show.
+        self.screenRegion = screenRegion
         self.creativeLayout = creativeLayout.map { layout in
             if config.mode == .cameraOnly { return .personOnly }
             return layout == .personOnly && !wantsCamera ? .screenFill : layout
@@ -370,7 +373,8 @@ final class RecordingEngine: ObservableObject {
             sourceShowsCursor: sourceShowsCursor,
             creativeLayout: creativeLayout,
             cameraStyle: creativeLayout == nil ? nil : .cutout,
-            cutoutPlacement: creativeLayout?.defaultCutoutPlacement
+            cutoutPlacement: creativeLayout?.defaultCutoutPlacement,
+            screenRegion: creativeLayout == .screenFill ? screenRegion : nil
         )
 
         // Compose the shareable final.mp4 (camera PiP + synced audio + canvas).
@@ -431,6 +435,7 @@ final class RecordingEngine: ObservableObject {
         usedScreen = false
         captureDisplayFrame = nil
         creativeLayout = nil
+        screenRegion = nil
         captureFPS = 30
         cinematicEffectsEnabled = true
         sourceShowsCursor = true

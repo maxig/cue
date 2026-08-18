@@ -40,6 +40,8 @@ final class CueVideoCompositorInstruction: NSObject, AVVideoCompositionInstructi
     let creativeLayout: CreativeLayout?
     let cameraStyle: CameraStyle
     let cutoutPlacement: CameraPlacement?
+    /// Which slice of the screen fills the vertical frame. Nil centres it.
+    let screenRegion: ScreenRegion?
     /// Whether the base video track is the camera (a camera-only recording)
     /// rather than the screen.
     let baseIsCamera: Bool
@@ -65,6 +67,7 @@ final class CueVideoCompositorInstruction: NSObject, AVVideoCompositionInstructi
          creativeLayout: CreativeLayout? = nil,
          cameraStyle: CameraStyle = .bubble,
          cutoutPlacement: CameraPlacement? = nil,
+         screenRegion: ScreenRegion? = nil,
          baseIsCamera: Bool = false,
          captionCues: [CaptionCue] = [],
          captionStyle: CaptionStyle? = nil) {
@@ -86,6 +89,7 @@ final class CueVideoCompositorInstruction: NSObject, AVVideoCompositionInstructi
         self.creativeLayout = creativeLayout
         self.cameraStyle = cameraStyle
         self.cutoutPlacement = cutoutPlacement
+        self.screenRegion = screenRegion
         self.baseIsCamera = baseIsCamera
         self.captionCues = captionCues
         self.captionStyle = captionStyle
@@ -228,8 +232,10 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
                 result = self.screenCard(image, in: zone, renderSize: size,
                                          cornerFraction: 0.03, shadow: true, over: result)
             case .screenFill, .personOnly:
-                // Fill the tall frame — a 16:9 desktop keeps its middle slice.
-                result = image.scaledToFill(size).composited(over: result)
+                // Fill the tall frame with the chosen slice of the screen,
+                // defaulting to the middle of it.
+                result = image.cropped(to: instruction.screenRegion)
+                    .scaledToFill(size).composited(over: result)
             }
         }
 
@@ -716,6 +722,21 @@ final class CueVideoCompositor: NSObject, AVVideoCompositing {
 }
 
 private extension CIImage {
+    /// Crops to a normalized region expressed with a top-left origin, which is
+    /// how the picker and the plan describe it — Core Image works bottom-up, so
+    /// the y axis flips here.
+    func cropped(to region: ScreenRegion?) -> CIImage {
+        guard let region, !region.isWholeScreen else { return self }
+        let ex = extent
+        guard ex.width > 0, ex.height > 0 else { return self }
+        let rect = CGRect(x: ex.minX + region.x * ex.width,
+                          y: ex.minY + (1 - region.y - region.height) * ex.height,
+                          width: region.width * ex.width,
+                          height: region.height * ex.height)
+        let clamped = rect.intersection(ex)
+        return clamped.isNull || clamped.isEmpty ? self : cropped(to: clamped)
+    }
+
     func scaledToFill(_ size: CGSize) -> CIImage {
         let ex = extent
         guard ex.width > 0, ex.height > 0 else { return self }
@@ -963,6 +984,7 @@ enum VideoComposer {
                 creativeLayout: plan.creativeLayout,
                 cameraStyle: plan.effectiveCameraStyle,
                 cutoutPlacement: plan.cutoutPlacement ?? plan.creativeLayout?.defaultCutoutPlacement,
+                screenRegion: plan.screenRegion,
                 baseIsCamera: built.baseIsCamera,
                 captionCues: burnsCaptions ? captions : [],
                 captionStyle: burnsCaptions ? (plan.captionStyle ?? .boldOutline) : nil)

@@ -70,3 +70,41 @@ enum CameraStyle: String, CaseIterable, Identifiable, Codable {
         }
     }
 }
+
+/// The slice of the captured screen that fills a vertical frame, normalized to
+/// the source (0…1, origin top-left) so it survives resolution and display
+/// changes. Nil means the middle of the screen.
+///
+/// Applied when compositing rather than when capturing: a 9:16 slice has the
+/// same real pixels either way, but keeping the whole screen in the raw master
+/// leaves the framing adjustable after the fact, and keeps the capture path out
+/// of it entirely.
+struct ScreenRegion: Codable, Hashable {
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+
+    /// The tallest centred 9:16 slice of a source with the given aspect ratio.
+    static func centered(sourceAspect: Double) -> ScreenRegion {
+        let target = 9.0 / 16.0
+        guard sourceAspect > 0 else { return ScreenRegion(x: 0, y: 0, width: 1, height: 1) }
+        if sourceAspect >= target {
+            // Wider than 9:16 — full height, a narrow column in the middle.
+            let width = target / sourceAspect
+            return ScreenRegion(x: (1 - width) / 2, y: 0, width: width, height: 1)
+        }
+        let height = sourceAspect / target
+        return ScreenRegion(x: 0, y: (1 - height) / 2, width: 1, height: height)
+    }
+
+    /// The region in the pixel space of a source of `size`, top-left origin.
+    func rect(in size: CGSize) -> CGRect {
+        CGRect(x: x * size.width, y: y * size.height,
+               width: width * size.width, height: height * size.height)
+    }
+
+    var isWholeScreen: Bool {
+        x <= 0.001 && y <= 0.001 && width >= 0.999 && height >= 0.999
+    }
+}

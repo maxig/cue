@@ -167,6 +167,7 @@ final class Preferences: ObservableObject {
         static let creativeEnabled = "cue.creative.enabled"
         static let creativeLayout = "cue.creative.layout"
         static let scriptDraft = "cue.creative.scriptDraft"
+        static let screenRegion = "cue.creative.screenRegion"
         static let captionsEnabled = "cue.captions.enabled"
         static let captionStyle = "cue.captions.style"
         static let captionLocale = "cue.captions.locale"
@@ -239,6 +240,17 @@ final class Preferences: ObservableObject {
     @Published var scriptDraft: String {
         didSet { defaults.set(scriptDraft, forKey: Key.scriptDraft) }
     }
+    /// The slice of the screen vertical recordings frame. Nil records the
+    /// middle of the display.
+    @Published var creativeScreenRegion: ScreenRegion? {
+        didSet {
+            if let creativeScreenRegion, let data = try? JSONEncoder().encode(creativeScreenRegion) {
+                defaults.set(data, forKey: Key.screenRegion)
+            } else {
+                defaults.removeObject(forKey: Key.screenRegion)
+            }
+        }
+    }
     /// Burns spoken words into the video as captions (Creative Mode only).
     @Published var captionsEnabled: Bool {
         didSet { defaults.set(captionsEnabled, forKey: Key.captionsEnabled) }
@@ -293,6 +305,8 @@ final class Preferences: ObservableObject {
         creativeModeEnabled = defaults.bool(forKey: Key.creativeEnabled)
         creativeLayout = CreativeLayout(rawValue: defaults.string(forKey: Key.creativeLayout) ?? "") ?? .screenFill
         scriptDraft = defaults.string(forKey: Key.scriptDraft) ?? ""
+        creativeScreenRegion = defaults.data(forKey: Key.screenRegion)
+            .flatMap { try? JSONDecoder().decode(ScreenRegion.self, from: $0) }
         captionsEnabled = defaults.object(forKey: Key.captionsEnabled) as? Bool ?? true
         captionStyle = CaptionStyle(rawValue: defaults.string(forKey: Key.captionStyle) ?? "") ?? .boldOutline
         captionLocaleIdentifier = defaults.string(forKey: Key.captionLocale)

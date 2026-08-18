@@ -26,6 +26,7 @@ final class AppState: ObservableObject {
     let cameraEngine = CameraEngine()
     let cameraBubble = CameraBubbleController()
     let captureIndicator = CaptureRegionIndicator()
+    let regionPicker = ScreenRegionPicker()
     /// The floating script panel. Excluded from capture like every other Cue
     /// window, so it's visible to the presenter but never in the video.
     let teleprompter = TeleprompterController()
@@ -260,7 +261,9 @@ final class AppState: ObservableObject {
                                             fps: self.preferences.captureFPS,
                                             cinematicEffects: self.preferences.cinematicEffectsEnabled,
                                             creativeLayout: self.preferences.creativeModeEnabled
-                                                ? self.preferences.creativeLayout : nil)
+                                                ? self.preferences.creativeLayout : nil,
+                                            screenRegion: self.canChooseScreenRegion
+                                                ? self.preferences.creativeScreenRegion : nil)
                 self.captureStartTask = nil
                 self.captureReady = true
                 self.enterRecordingIfReady()
@@ -412,6 +415,31 @@ final class AppState: ObservableObject {
     }
 
     // MARK: Captions
+
+    /// Opens the overlay for choosing which 9:16 slice of the screen a vertical
+    /// recording frames. Only meaningful for display capture — a window is
+    /// already its own frame.
+    func chooseScreenRegion() {
+        guard let screen = captureScreen() else { return }
+        regionPicker.pick(on: screen, initial: preferences.creativeScreenRegion) { [weak self] region in
+            guard let self, let region else { return }
+            self.preferences.creativeScreenRegion = region
+            self.updateCaptureIndicator()
+        }
+    }
+
+    /// Clears the chosen area, going back to the middle of the screen.
+    func clearScreenRegion() {
+        preferences.creativeScreenRegion = nil
+        updateCaptureIndicator()
+    }
+
+    /// Whether choosing an area applies to what is currently selected.
+    var canChooseScreenRegion: Bool {
+        preferences.creativeModeEnabled
+            && preferences.creativeLayout == .screenFill
+            && config.mode == .screen
+    }
 
     /// Prompts for speech access if it has never been asked for, at a moment
     /// when nothing is recording. Captions default to on, so the prompt has to
@@ -596,14 +624,24 @@ final class AppState: ObservableObject {
 
     // MARK: Capture-region geometry
 
+    private func captureScreen() -> NSScreen? {
+        guard let displayID = config.display?.id else { return NSScreen.main }
+        return NSScreen.screens.first { Self.displayID(of: $0) == displayID } ?? NSScreen.main
+    }
+
     private func captureRegionRect() -> NSRect? {
         switch config.mode {
         case .screen:
-            guard let displayID = config.display?.id else { return nil }
-            if let screen = NSScreen.screens.first(where: { Self.displayID(of: $0) == displayID }) {
+            guard let screen = captureScreen() else { return nil }
+            guard canChooseScreenRegion, let region = preferences.creativeScreenRegion else {
                 return screen.frame
             }
-            return NSScreen.main?.frame
+            // The region is stored top-left origin; NSScreen frames run bottom-up.
+            let f = screen.frame
+            return NSRect(x: f.minX + region.x * f.width,
+                          y: f.minY + (1 - region.y - region.height) * f.height,
+                          width: region.width * f.width,
+                          height: region.height * f.height)
         case .window:
             guard let window = config.window?.scWindow else { return nil }
             return Self.cocoaRect(fromCG: window.frame)
