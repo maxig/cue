@@ -4,6 +4,31 @@ The `## <version> — <date>` section matching a release tag becomes the GitHub
 release body **and** the in-app Sparkle update notes. Write it for users:
 what changed and why they'd care, not commit titles.
 
+## 1.6.0 — 2026-08-18
+
+Vertical recordings can now frame any part of your screen, and the two things
+that stopped Creative Mode working in 1.5.0 are fixed.
+
+- Screen Fill no longer has to use the middle of your display. Turn on Creative
+  Mode and click Choose next to Area, then drag a rectangle over whatever you
+  want in shot — a browser window, one half of a wide screen, the corner of an
+  app. It keeps the tall shape of the finished video, so nothing gets cropped a
+  second time, and the outline you see while recording marks exactly what will
+  be in it. Cue remembers the area for next time, and Reset goes back to the
+  middle of the screen.
+- The script panel can be typed into. It couldn't before: the panel was never
+  able to take keyboard focus, so anything you typed went to whatever window
+  was behind it. It also no longer takes the keyboard once you start recording,
+  so the app you're recording keeps receiving what you type.
+- Captions work. Cue was never actually asking permission to listen to your
+  recordings — it only checked whether it already had it, then told you to turn
+  it on in System Settings, where Cue wasn't listed precisely because it had
+  never asked. It now asks the first time you switch Creative Mode on, and if
+  you've previously said no, Settings has a button that opens the right pane.
+- Cue no longer claims it can record a selected region of the screen in the
+  older, non-vertical mode. That was never built. Choosing a 9:16 area in
+  Creative Mode is the way to record part of your screen.
+
 ## 1.5.0 — 2026-08-18
 
 Cue can now make vertical videos — the tall kind that go on YouTube Shorts,
