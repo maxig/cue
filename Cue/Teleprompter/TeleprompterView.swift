@@ -7,6 +7,12 @@ struct TeleprompterView: View {
     @EnvironmentObject private var preferences: Preferences
     @EnvironmentObject private var controller: TeleprompterController
 
+    /// The script is edited through local state and written back on change.
+    /// Binding the field straight to `preferences.scriptDraft` made every
+    /// keystroke republish Preferences — which AppState forwards — rebuilding
+    /// the whole view tree under the cursor while typing.
+    @State private var draft = ""
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -27,6 +33,13 @@ struct TeleprompterView: View {
                 )
         }
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .onAppear { draft = preferences.scriptDraft }
+        .onChange(of: draft) { _, text in
+            if preferences.scriptDraft != text { preferences.scriptDraft = text }
+        }
+        .onChange(of: preferences.scriptDraft) { _, text in
+            if draft != text { draft = text }
+        }
     }
 
     // MARK: Header
@@ -63,12 +76,12 @@ struct TeleprompterView: View {
 
     private var editor: some View {
         ZStack(alignment: .topLeading) {
-            TextEditor(text: $preferences.scriptDraft)
+            TextEditor(text: $draft)
                 .font(.system(size: preferences.teleprompterFontSize * 0.7))
                 .scrollContentBackground(.hidden)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-            if preferences.scriptDraft.isEmpty {
+            if draft.isEmpty {
                 Text("Write or paste your script…")
                     .font(.system(size: preferences.teleprompterFontSize * 0.7))
                     .foregroundStyle(Theme.tertiaryText)
