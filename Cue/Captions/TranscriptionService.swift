@@ -122,8 +122,20 @@ enum TranscriptionService {
 
     // MARK: macOS 15 — SFSpeechRecognizer
 
+    /// Asks for permission the first time transcribing actually needs it.
+    /// Only *checking* is what left captions permanently stuck: an app that has
+    /// never asked doesn't appear in System Settings ▸ Speech Recognition at
+    /// all, so there was nothing there for anyone to switch on.
+    private static func authorize() async -> SFSpeechRecognizerAuthorizationStatus {
+        let status = SFSpeechRecognizer.authorizationStatus()
+        guard status == .notDetermined else { return status }
+        return await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
+        }
+    }
+
     private static func recognizerTranscribe(audioURL: URL, locale: Locale) async throws -> [CaptionWord] {
-        guard SFSpeechRecognizer.authorizationStatus() == .authorized else { throw Failure.notAuthorized }
+        guard await authorize() == .authorized else { throw Failure.notAuthorized }
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
             throw Failure.unsupportedLanguage(locale)
         }

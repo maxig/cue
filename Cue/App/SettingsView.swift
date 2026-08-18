@@ -140,7 +140,10 @@ struct SettingsView: View {
         Card("Captions") {
             ToggleRow("Add captions automatically",
                       isOn: Binding(get: { prefs.captionsEnabled },
-                                    set: { prefs.captionsEnabled = $0 }))
+                                    set: {
+                                        prefs.captionsEnabled = $0
+                                        if $0 { app.ensureSpeechPermission() }
+                                    }))
             Caption("After each vertical recording, Cue writes out what you said and puts it on screen — most people watch with the sound off.")
 
             StackedRow("Style") {
@@ -157,9 +160,16 @@ struct SettingsView: View {
                 .labelsHidden()
                 .frame(maxWidth: 150)
             }
-            Caption(app.permissions.speechRecognition == .denied
-                    ? "Cue can't listen to your recordings on this Mac, so captions fall back to the transcript from your Cue server. You can change this in System Settings ▸ Privacy & Security ▸ Speech Recognition."
-                    : "The words are worked out on this Mac, so this works offline and nothing is sent anywhere.")
+            if app.permissions.speechRecognition == .denied {
+                Caption("Cue isn't allowed to listen to your recordings on this Mac, so it can't write captions.")
+                Button("Open Speech Recognition settings…") {
+                    app.openSpeechRecognitionSettings()
+                }
+                .buttonStyle(.link)
+                .font(.cueCaption)
+            } else {
+                Caption("The words are worked out on this Mac, so this works offline and nothing is sent anywhere.")
+            }
         }
     }
 

@@ -214,6 +214,9 @@ struct RecorderPopoverView: View {
             } trailing: {
                 pillToggle(isOn: creativeOn, enabled: true) {
                     app.preferences.creativeModeEnabled.toggle()
+                    // Captions are on by default, so this is where most people
+                    // first opt into needing speech access.
+                    if app.preferences.creativeModeEnabled { app.ensureSpeechPermission() }
                 }
             }
 
@@ -245,12 +248,8 @@ struct RecorderPopoverView: View {
                 } trailing: {
                     pillToggle(isOn: app.preferences.captionsEnabled, enabled: true) {
                         app.preferences.captionsEnabled.toggle()
-                        // Ask for permission now, while nothing is recording —
-                        // never in the middle of a take.
-                        if app.preferences.captionsEnabled,
-                           app.permissions.speechRecognition == .notDetermined {
-                            Task { await app.permissions.requestSpeechRecognition() }
-                        }
+                        // Ask now, while nothing is recording — never mid-take.
+                        app.ensureSpeechPermission()
                     }
                 }
 
