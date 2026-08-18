@@ -183,7 +183,43 @@ struct RecorderPopoverView: View {
                     app.config.microphoneEnabled.toggle()
                 }
             }
+
+            if micOn { micMeter }
         }
+    }
+
+    /// Live input level. A bar that never moves while you talk is the only
+    /// warning you get that a recording is about to capture silence.
+    private var micMeter: some View {
+        let level = app.micLevel.level
+        return VStack(alignment: .leading, spacing: 3) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Theme.secondaryText.opacity(0.18))
+                    Capsule()
+                        .fill(level > 0.06 ? Theme.accent : Theme.secondaryText.opacity(0.5))
+                        .frame(width: max(2, geo.size.width * level))
+                        .animation(.linear(duration: 0.06), value: level)
+                }
+            }
+            .frame(height: 4)
+
+            if app.permissions.microphone != .granted {
+                Button("Cue isn't allowed to use the microphone — allow it") {
+                    Task { await app.permissions.requestMicrophone() }
+                }
+                .buttonStyle(.plain)
+                .font(.cueCaption)
+                .foregroundStyle(Theme.accent)
+                .lineLimit(1)
+            } else if app.micLevel.isRunning && !app.micLevel.hasHeardAnything {
+                Text("Not hearing anything yet — say something to check")
+                    .font(.cueCaption)
+                    .foregroundStyle(Theme.tertiaryText)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 4)
     }
 
     private var micOn: Bool { app.config.microphoneEnabled && hasMic }
