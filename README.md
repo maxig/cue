@@ -25,7 +25,7 @@ either a local MinIO bucket or a free-tier **Cloudflare** stack (R2 + D1 + a
 Worker that also does AI transcription).
 
 - 🪶 **Menubar-first** — a tiny agent, no Dock clutter. Click, record, done.
-- 🖥️ **Native capture** — ScreenCaptureKit + AVFoundation. Screen, window, region, or camera-only.
+- 🖥️ **Native capture** — ScreenCaptureKit + AVFoundation. Full screen, a single window, or camera-only.
 - 🎥 **Camera bubble** — a draggable webcam overlay, baked into the final video as picture-in-picture.
 - 📱 **Creative Mode** — vertical 9:16 recording for Shorts / TikTok / Reels, with your background removed, burned-in captions, and a teleprompter that never lands in the video.
 - 🔗 **Link first** — Cue allocates and copies the share URL before upload; visitors see a waiting page until media is ready.
@@ -44,7 +44,7 @@ Worker that also does AI transcription).
 **Working today**
 
 - One-click recording from the menu bar with a live recording overlay.
-- Capture modes: **full screen**, **single window**, **selected region**, **camera-only**.
+- Capture modes: **full screen**, **single window**, **camera-only**.
 - Configurable **30 or 60 fps** capture, with the final composition rendered at the selected rate.
 - Screen, system audio, microphone, and camera are recorded as **separate tracks**,
   then composed into a single shareable **`final.mp4`** (camera as a shaped PiP, audio mixed).
