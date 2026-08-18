@@ -4,6 +4,23 @@ The `## <version> — <date>` section matching a release tag becomes the GitHub
 release body **and** the in-app Sparkle update notes. Write it for users:
 what changed and why they'd care, not commit titles.
 
+## 1.6.2 — 2026-08-18
+
+You can now see whether your microphone is actually hearing you, before you
+record instead of after.
+
+- The microphone row shows a live level meter while the Cue menu is open. Say
+  something: if the bar moves, you're being picked up. If it stays flat, the
+  recording would have captured silence — which until now you only found out
+  once it was finished and the captions came back empty.
+- Cue asks for microphone access if it never has. It used to ask only during
+  first-time setup, so if you skipped that step you could reach Start Recording
+  having never been asked, and recordings would come out silent with nothing
+  explaining why. The meter now says when access is missing and offers to ask.
+- When a recording really did capture no sound, Cue says so and points at the
+  microphone, instead of reporting that it couldn't make out any speech. The two
+  read the same to a user but need completely different fixes.
+
 ## 1.6.1 — 2026-08-18
 
 Choosing the part of the screen to record actually works now. The picker in
