@@ -1,6 +1,19 @@
 import SwiftUI
 import AppKit
 
+/// A borderless `NSPanel` reports `canBecomeKey == false`, which leaves any text
+/// field inside it unable to take keyboard focus — you can click into the script
+/// but not type. Overriding it is the only way to get a borderless panel that
+/// accepts typing. `canBecomeMain` stays false so Cue never steals main-window
+/// status from the app being recorded.
+private final class ScriptPanel: NSPanel {
+    /// Off while prompting, so reading a script back never intercepts the
+    /// keystrokes meant for whatever is being recorded.
+    var acceptsKeyboard = true
+    override var canBecomeKey: Bool { acceptsKeyboard }
+    override var canBecomeMain: Bool { false }
+}
+
 /// The floating script panel. It sits beside whatever you're recording so you
 /// can read from it, and never appears in the video: Cue's own windows are all
 /// excluded from screen capture (`SCContentFilter(display:excludingApplications:)`
@@ -24,7 +37,7 @@ final class TeleprompterController: ObservableObject {
     /// controls agree about it.
     @Published var isScrolling = false
 
-    private var panel: NSPanel?
+    private var panel: ScriptPanel?
     var isVisible: Bool { panel?.isVisible ?? false }
 
     func show(appState: AppState, mode: Mode) {
@@ -39,7 +52,7 @@ final class TeleprompterController: ObservableObject {
             let hosting = NSHostingView(rootView: root)
             hosting.translatesAutoresizingMaskIntoConstraints = true
 
-            let panel = NSPanel(
+            let panel = ScriptPanel(
                 contentRect: Self.defaultFrame(),
                 styleMask: [.nonactivatingPanel, .borderless, .resizable, .fullSizeContentView],
                 backing: .buffered,
@@ -51,7 +64,6 @@ final class TeleprompterController: ObservableObject {
             panel.isOpaque = false
             panel.hasShadow = true
             panel.isMovableByWindowBackground = true
-            panel.becomesKeyOnlyIfNeeded = true
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
             panel.hidesOnDeactivate = false
             // Keep the script out of any capture, including other apps' and the
@@ -62,6 +74,7 @@ final class TeleprompterController: ObservableObject {
             self.panel = panel
         }
         panel?.orderFrontRegardless()
+        applyKeyboardPolicy()
     }
 
     /// Switches modes without disturbing the panel's position, used when the
@@ -69,6 +82,24 @@ final class TeleprompterController: ObservableObject {
     func setMode(_ mode: Mode, autoScroll: Bool) {
         self.mode = mode
         isScrolling = mode == .prompting && autoScroll
+        applyKeyboardPolicy()
+    }
+
+    /// The panel only takes the keyboard while the script is being written.
+    /// `.nonactivatingPanel` means it can do that without pulling focus away
+    /// from the app in front, which is why it can be typed into from anywhere.
+    private func applyKeyboardPolicy() {
+        guard let panel else { return }
+        let editing = mode == .editing
+        panel.acceptsKeyboard = editing
+        if editing {
+            panel.makeKeyAndOrderFront(nil)
+        } else if panel.isKeyWindow {
+            // Hand the keyboard back to whatever is being recorded.
+            panel.makeFirstResponder(nil)
+            panel.orderOut(nil)
+            panel.orderFrontRegardless()
+        }
     }
 
     func hide() {
