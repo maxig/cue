@@ -421,11 +421,25 @@ final class AppState: ObservableObject {
     /// already its own frame.
     func chooseScreenRegion() {
         guard let screen = captureScreen() else { return }
-        regionPicker.pick(on: screen, initial: preferences.creativeScreenRegion) { [weak self] region in
-            guard let self, let region else { return }
-            self.preferences.creativeScreenRegion = region
-            self.updateCaptureIndicator()
+        regionPicker.pick(on: screen, initial: preferences.creativeScreenRegion) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .cancelled:
+                break
+            case let .saved(region):
+                self.apply(region)
+            case let .record(region):
+                // Choosing the area closes the popover, so there'd be nothing
+                // left to press Record in — go straight into the countdown.
+                self.apply(region)
+                self.start()
+            }
         }
+    }
+
+    private func apply(_ region: ScreenRegion) {
+        preferences.creativeScreenRegion = region
+        updateCaptureIndicator()
     }
 
     /// Clears the chosen area, going back to the middle of the screen.
