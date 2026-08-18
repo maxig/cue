@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Accelerate
 
 /// Produces a caption track for a recording and burns it into the video.
 ///
@@ -82,6 +83,25 @@ final class CaptionGenerator: ObservableObject {
 
     // MARK: Transcription
 
+    /// Loudest sample in the audio, 0…1. Used to tell "nothing was said" apart
+    /// from "the microphone recorded nothing", which are very different problems
+    /// for whoever has to fix them.
+    private static func peakLevel(of url: URL) -> Float? {
+        guard let file = try? AVAudioFile(forReading: url),
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 16384)
+        else { return nil }
+        var peak: Float = 0
+        while (try? file.read(into: buffer)) != nil, buffer.frameLength > 0 {
+            guard let channels = buffer.floatChannelData else { break }
+            for channel in 0..<Int(buffer.format.channelCount) {
+                var channelPeak: Float = 0
+                vDSP_maxmgv(channels[channel], 1, &channelPeak, vDSP_Length(buffer.frameLength))
+                peak = max(peak, channelPeak)
+            }
+        }
+        return peak
+    }
+
     private func transcribe(_ recording: Recording, locale: Locale,
                             store: RecordingStore) async throws -> CaptionTrack {
         var onDeviceFailure: TranscriptionService.Failure?
@@ -121,6 +141,12 @@ final class CaptionGenerator: ObservableObject {
                 break
             }
         }
+        // About -26 dB. Real speech peaks far above this even from a quiet
+        // talker; a microphone that never picked up the room sits well below.
+        if let audioURL = store.audioURL(for: recording),
+           let peak = Self.peakLevel(of: audioURL), peak < 0.05 {
+            throw Failure.silentRecording
+        }
         throw Failure.noTranscript
     }
 
@@ -128,6 +154,7 @@ final class CaptionGenerator: ObservableObject {
         case busy
         case notEditable
         case noTranscript
+        case silentRecording
         case cannotTranscribe(String)
         case renderFailed
 
@@ -136,6 +163,7 @@ final class CaptionGenerator: ObservableObject {
             case .busy: return "Cue is already making captions for another recording."
             case .notEditable: return "Cue can't add captions to this recording — it was made before captions existed. Record a new one to use them."
             case .noTranscript: return "Cue couldn't make out any speech in this recording, so there was nothing to caption."
+            case .silentRecording: return "Your microphone didn't pick up any sound during this recording, so there was nothing to caption. Check that the right microphone is selected — Cue shows its level next to the microphone before you record."
             case let .cannotTranscribe(reason): return reason
             case .renderFailed: return "The captions were written down, but the video couldn't be updated with them."
             }

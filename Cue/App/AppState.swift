@@ -27,6 +27,7 @@ final class AppState: ObservableObject {
     let cameraBubble = CameraBubbleController()
     let captureIndicator = CaptureRegionIndicator()
     let regionPicker = ScreenRegionPicker()
+    let micLevel = MicLevelMonitor()
     /// The floating script panel. Excluded from capture like every other Cue
     /// window, so it's visible to the presenter but never in the video.
     let teleprompter = TeleprompterController()
@@ -120,6 +121,7 @@ final class AppState: ObservableObject {
                           store.objectWillChange,
                           uploadSettings.objectWillChange,
                           preferences.objectWillChange,
+                          micLevel.objectWillChange,
                           teleprompter.objectWillChange,
                           captionGenerator.objectWillChange] {
             publisher
@@ -229,6 +231,7 @@ final class AppState: ObservableObject {
             }
         }
 
+        micLevel.stop()
         startCameraPreviewIfNeeded()
         overlay.show(appState: self)
         if preferences.creativeModeEnabled && !preferences.scriptDraft.isEmpty {
@@ -539,13 +542,37 @@ final class AppState: ObservableObject {
         livePreviewActive = true
         updateCaptureIndicator()
         startCameraPreviewIfNeeded()
+        startMicMonitorIfNeeded()
     }
 
     /// Called when the popover closes. Tears the preview down only if we're idle;
     /// once a countdown/recording is under way the camera must keep running.
     func popoverDidDisappear() {
         guard state == .idle else { return }
+        micLevel.stop()
         teardownCamera()
+    }
+
+    /// Shows the input level for the chosen microphone while the popover is
+    /// open, so a microphone that isn't hearing anything is obvious before a
+    /// recording rather than after it.
+    func startMicMonitorIfNeeded() {
+        guard state == .idle, livePreviewActive else { return }
+        guard config.microphoneEnabled, config.microphone?.isNone == false,
+              let id = config.microphone?.id else {
+            micLevel.stop()
+            return
+        }
+        // Onboarding is the only other place that asks, so anyone who skipped it
+        // would otherwise reach Record having never been prompted.
+        if permissions.microphone == .notDetermined {
+            Task { [weak self] in
+                await self?.permissions.requestMicrophone()
+                self?.micLevel.start(deviceID: id)
+            }
+            return
+        }
+        micLevel.start(deviceID: id)
     }
 
     /// Called when the source/camera selection changes while the popover is open,
@@ -553,6 +580,7 @@ final class AppState: ObservableObject {
     func liveSelectionChanged() {
         guard state == .idle, livePreviewActive else { return }
         updateCaptureIndicator()
+        startMicMonitorIfNeeded()
         let wantsCamera = config.mode == .cameraOnly
             || (preferences.showCameraBubble && config.cameraEnabled && config.camera?.isNone == false)
         if wantsCamera {
