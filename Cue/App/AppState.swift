@@ -413,6 +413,25 @@ final class AppState: ObservableObject {
 
     // MARK: Captions
 
+    /// Prompts for speech access if it has never been asked for, at a moment
+    /// when nothing is recording. Captions default to on, so the prompt has to
+    /// be driven by turning Creative Mode on as well as by the captions switch
+    /// itself — otherwise nobody ever crosses an off-to-on edge and the request
+    /// is never made.
+    func ensureSpeechPermission() {
+        guard preferences.captionsEnabled,
+              permissions.speechRecognition == .notDetermined else { return }
+        Task { await permissions.requestSpeechRecognition() }
+    }
+
+    /// Opens the pane where speech access can be switched back on. Cue only
+    /// appears in that list once it has asked at least once, which is why
+    /// `ensureSpeechPermission` matters before ever pointing anyone here.
+    func openSpeechRecognitionSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     /// Whether a just-finished recording should get captions without being asked.
     private func shouldCaption(_ recording: Recording) -> Bool {
         preferences.creativeModeEnabled && preferences.captionsEnabled
@@ -441,6 +460,9 @@ final class AppState: ObservableObject {
             )
         } catch {
             NSLog("Cue caption generation failed: \(error)")
+            // Transcribing asks for speech access on demand, so the cached
+            // status may be out of date now.
+            permissions.refresh()
             // Cue's own failures are written for people to read; anything else
             // would put a raw system string in front of the user.
             errorMessage = (error as? CaptionGenerator.Failure)?.errorDescription
