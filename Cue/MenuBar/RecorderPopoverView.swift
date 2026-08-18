@@ -106,7 +106,7 @@ struct RecorderPopoverView: View {
             )
 
             switch app.config.mode {
-            case .screen, .area:
+            case .screen:
                 RowMenu(
                     systemImage: "display",
                     title: app.config.display?.name ?? "No display",

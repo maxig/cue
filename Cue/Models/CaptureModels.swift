@@ -6,7 +6,6 @@ import AppKit
 enum CaptureMode: String, CaseIterable, Identifiable, Codable {
     case screen
     case window
-    case area
     case cameraOnly
 
     var id: String { rawValue }
@@ -15,7 +14,6 @@ enum CaptureMode: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .screen: return "Screen"
         case .window: return "Window"
-        case .area: return "Area"
         case .cameraOnly: return "Camera"
         }
     }
@@ -24,7 +22,6 @@ enum CaptureMode: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .screen: return "display"
         case .window: return "macwindow"
-        case .area: return "viewfinder.rectangular"
         case .cameraOnly: return "web.camera"
         }
     }

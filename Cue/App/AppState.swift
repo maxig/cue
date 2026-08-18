@@ -576,7 +576,7 @@ final class AppState: ObservableObject {
 
     private func captureRegionRect() -> NSRect? {
         switch config.mode {
-        case .screen, .area:
+        case .screen:
             guard let displayID = config.display?.id else { return nil }
             if let screen = NSScreen.screens.first(where: { Self.displayID(of: $0) == displayID }) {
                 return screen.frame
