@@ -34,6 +34,10 @@ final class RecordingEngine: ObservableObject {
     private var screenPadding: Double = 0
     private var canvasBackground: CanvasBackground = .none
     private var aspectMode: AspectRatioMode = .sixteenNine
+    /// Vertical layout when recording in Creative Mode; nil records the classic
+    /// landscape composition. Capture itself is identical either way — only the
+    /// composition changes — so a clip can be reframed afterwards.
+    private var creativeLayout: CreativeLayout?
     /// The capture frame rate chosen at `start` (30 or 60). Remembered so the
     /// final composition is rendered at the same rate instead of a fixed 30.
     private var captureFPS: Int = 30
@@ -72,7 +76,8 @@ final class RecordingEngine: ObservableObject {
                background: CanvasBackground,
                aspectMode: AspectRatioMode,
                fps: Int = 30,
-               cinematicEffects: Bool = true) async throws {
+               cinematicEffects: Bool = true,
+               creativeLayout: CreativeLayout? = nil) async throws {
         guard currentID == nil else { throw RecordingError.alreadyRecording }
 
         let id = UUID()
@@ -101,6 +106,15 @@ final class RecordingEngine: ObservableObject {
 
         let wantsCamera = config.mode == .cameraOnly
             || (config.cameraEnabled && config.camera?.isNone == false && config.camera != nil)
+
+        // Pick the layout that can actually be rendered from what's being
+        // captured: a camera-only clip has no screen to frame, and "just me"
+        // needs a camera to show.
+        self.creativeLayout = creativeLayout.map { layout in
+            if config.mode == .cameraOnly { return .personOnly }
+            return layout == .personOnly && !wantsCamera ? .screenFill : layout
+        }
+
         do {
             try store.beginRecoveryJournal(RecordingRecoveryManifest(
                 id: id,
@@ -333,30 +347,45 @@ final class RecordingEngine: ObservableObject {
             cameraDisableStart = nil
         }
 
+        // The compose inputs, built first so the same recipe drives this render
+        // and every later re-render (camera reposition, Creative Mode edits,
+        // caption burn-in) from the retained raw tracks.
+        let plan = CompositionPlan(
+            bubbleShape: bubbleShape,
+            mirrored: cameraMirrored,
+            cameraBackground: cameraBackground,
+            corner: cameraCorner,
+            padding: screenPadding,
+            background: canvasBackground,
+            aspectRatio: creativeLayout == nil ? aspectMode.ratio.map { Double($0) } : nil,
+            fps: captureFPS,
+            cameraStartOffset: cameraOffset,
+            leadTrim: leadTrim,
+            cameraHiddenRanges: cameraDisabledRanges,
+            screenPauseSpans: screenPauseSpans,
+            cameraPauseSpans: cameraPauseSpans,
+            cameraPlacement: nil,
+            activityFileName: activityFileName,
+            cinematicEffectsEnabled: cinematicEffectsEnabled && activity != nil,
+            sourceShowsCursor: sourceShowsCursor,
+            creativeLayout: creativeLayout,
+            cameraStyle: creativeLayout == nil ? nil : .cutout,
+            cutoutPlacement: creativeLayout?.defaultCutoutPlacement
+        )
+
         // Compose the shareable final.mp4 (camera PiP + synced audio + canvas).
+        // Captions, when enabled, are burned in afterwards by CaptionGenerator —
+        // transcription takes long enough that it shouldn't hold up the file
+        // landing on disk.
         var finalName: String?
         var audioName: String?
         var size = CGSize.zero
         do {
             let output = try await VideoComposer.compose(
+                plan: plan,
                 screenURL: screenName.map { folder.appendingPathComponent($0) },
                 cameraURL: cameraName.map { folder.appendingPathComponent($0) },
-                bubbleShape: bubbleShape,
-                mirrored: cameraMirrored,
-                cameraBackground: cameraBackground,
-                corner: cameraCorner,
-                padding: screenPadding,
-                background: canvasBackground,
-                aspectRatio: aspectMode.ratio,
-                fps: captureFPS,
-                cameraStartOffset: cameraOffset,
-                leadTrim: leadTrim,
-                cameraHiddenRanges: cameraDisabledRanges,
-                screenPauseSpans: screenPauseSpans,
-                cameraPauseSpans: cameraPauseSpans,
                 mouseActivity: activity,
-                cinematicEffects: cinematicEffectsEnabled,
-                drawCustomCursor: !sourceShowsCursor,
                 outputURL: folder.appendingPathComponent("final.mp4")
             )
             finalName = "final.mp4"
@@ -371,29 +400,6 @@ final class RecordingEngine: ObservableObject {
             ?? screenName.map { folder.appendingPathComponent($0) }
             ?? cameraName.map { folder.appendingPathComponent($0) }
         let thumbName = await generateThumbnail(id: id, sourceURL: thumbSource)
-
-        // Persist the compose inputs so the clip can be re-rendered later
-        // (post-record camera reposition / cinematic effects) from the raw
-        // tracks, without re-recording.
-        let plan = CompositionPlan(
-            bubbleShape: bubbleShape,
-            mirrored: cameraMirrored,
-            cameraBackground: cameraBackground,
-            corner: cameraCorner,
-            padding: screenPadding,
-            background: canvasBackground,
-            aspectRatio: aspectMode.ratio.map { Double($0) },
-            fps: captureFPS,
-            cameraStartOffset: cameraOffset,
-            leadTrim: leadTrim,
-            cameraHiddenRanges: cameraDisabledRanges,
-            screenPauseSpans: screenPauseSpans,
-            cameraPauseSpans: cameraPauseSpans,
-            cameraPlacement: nil,
-            activityFileName: activityFileName,
-            cinematicEffectsEnabled: cinematicEffectsEnabled && activity != nil,
-            sourceShowsCursor: sourceShowsCursor
-        )
 
         let recording = Recording(
             id: id,
@@ -424,6 +430,7 @@ final class RecordingEngine: ObservableObject {
         usedCamera = false
         usedScreen = false
         captureDisplayFrame = nil
+        creativeLayout = nil
         captureFPS = 30
         cinematicEffectsEnabled = true
         sourceShowsCursor = true

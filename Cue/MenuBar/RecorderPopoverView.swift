@@ -41,6 +41,7 @@ struct RecorderPopoverView: View {
                 sourceSection
                 cameraSection
                 microphoneSection
+                creativeSection
                 recordButton
                 footer
             }
@@ -188,6 +189,97 @@ struct RecorderPopoverView: View {
     private var micOn: Bool { app.config.microphoneEnabled && hasMic }
     private var hasMic: Bool { app.config.microphone?.isNone == false }
 
+    // MARK: Creative Mode
+
+    private var creativeOn: Bool { app.preferences.creativeModeEnabled }
+
+    private var scriptWordCount: Int {
+        app.preferences.scriptDraft.split(whereSeparator: \.isWhitespace).count
+    }
+
+    private var creativeSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SectionLabel("Vertical video")
+            ControlRow(
+                systemImage: creativeOn ? "sparkles" : "rectangle.portrait",
+                iconColor: creativeOn ? Theme.accent : Theme.secondaryText
+            ) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Creative Mode")
+                        .font(.cueRowTitle)
+                    Text(creativeOn ? app.preferences.creativeLayout.title : "For Shorts, TikTok, Reels")
+                        .font(.cueCaption)
+                        .foregroundStyle(Theme.secondaryText)
+                }
+            } trailing: {
+                pillToggle(isOn: creativeOn, enabled: true) {
+                    app.preferences.creativeModeEnabled.toggle()
+                }
+            }
+
+            if creativeOn {
+                RowMenu(
+                    systemImage: app.preferences.creativeLayout.systemImage,
+                    title: app.preferences.creativeLayout.title,
+                    options: CreativeLayout.allCases.map { ($0.rawValue, $0.title) },
+                    onSelect: { id in
+                        if let layout = CreativeLayout(rawValue: id) {
+                            app.preferences.creativeLayout = layout
+                        }
+                    }
+                )
+
+                ControlRow(
+                    systemImage: "captions.bubble",
+                    iconColor: app.preferences.captionsEnabled ? Theme.accent : Theme.secondaryText
+                ) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Captions").font(.cueRowTitle)
+                        Text(app.preferences.captionsEnabled
+                             ? app.preferences.captionStyle.title
+                             : "For watching without sound")
+                            .font(.cueCaption)
+                            .foregroundStyle(Theme.secondaryText)
+                            .lineLimit(1)
+                    }
+                } trailing: {
+                    pillToggle(isOn: app.preferences.captionsEnabled, enabled: true) {
+                        app.preferences.captionsEnabled.toggle()
+                        // Ask for permission now, while nothing is recording —
+                        // never in the middle of a take.
+                        if app.preferences.captionsEnabled,
+                           app.permissions.speechRecognition == .notDetermined {
+                            Task { await app.permissions.requestSpeechRecognition() }
+                        }
+                    }
+                }
+
+                Button {
+                    app.teleprompter.show(appState: app, mode: .editing)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "text.aligncenter")
+                            .font(.system(size: 12, weight: .medium))
+                        Text(app.preferences.scriptDraft.isEmpty ? "Write a script…" : "Edit script")
+                            .font(.system(size: 12, weight: .medium))
+                        Spacer()
+                        if scriptWordCount > 0 {
+                            Text(scriptWordCount == 1 ? "1 word" : "\(scriptWordCount) words")
+                                .font(.cueCaption)
+                                .foregroundStyle(Theme.tertiaryText)
+                        }
+                    }
+                    .foregroundStyle(Theme.secondaryText)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.glassControl)
+            }
+        }
+    }
+
     private func pillToggle(isOn: Bool, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             OnOffPill(isOn: isOn)
@@ -217,7 +309,9 @@ struct RecorderPopoverView: View {
         case .idle: return "Start Recording"
         case .countdown: return "Cancel"
         case .recording: return "Stop Recording"
-        case .processing: return "Saving…"
+        // Writing captions takes a while — say what's happening rather than
+        // leaving "Saving…" on screen for minutes.
+        case .processing: return app.captionGenerator.phase.title ?? "Saving…"
         }
     }
 

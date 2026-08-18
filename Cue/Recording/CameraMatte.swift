@@ -12,6 +12,10 @@ import CoreVideo
 final class CameraMatte {
 
     private let request = VNGeneratePersonSegmentationRequest()
+    /// Last mask (at its native low resolution) and the composition time it was
+    /// generated for, used to skip re-segmenting near-identical frames.
+    private var cachedMask: CIImage?
+    private var cachedMaskTime: Double?
 
     /// `quality`: use `.fast` for the live preview (cheap, runs continuously)
     /// and `.balanced`/`.accurate` for the final export.
@@ -23,10 +27,27 @@ final class CameraMatte {
     /// Returns the camera frame with its background replaced per `background`,
     /// in the pixel buffer's own coordinate space. `.none` (or a segmentation
     /// failure) returns the untouched frame so callers degrade gracefully.
-    func composite(_ pixelBuffer: CVPixelBuffer, background: CameraBackground) -> CIImage {
+    ///
+    /// - Parameters:
+    ///   - featherSigma: softens the mask edge so a cut-out person doesn't have
+    ///     a razor-sharp outline. Applied at the mask's own low resolution, so
+    ///     it costs almost nothing.
+    ///   - time: composition time of this frame, needed for `maskReuseWindow`.
+    ///   - maskReuseWindow: reuse the previous mask for frames closer together
+    ///     than this. Segmentation is the most expensive step in the frame, and
+    ///     a person doesn't move far in a 60th of a second.
+    func composite(_ pixelBuffer: CVPixelBuffer,
+                   background: CameraBackground,
+                   featherSigma: Double = 0,
+                   time: Double? = nil,
+                   maskReuseWindow: Double = 0) -> CIImage {
         let image = CIImage(cvPixelBuffer: pixelBuffer)
         guard background.removesBackground,
-              let mask = personMask(for: pixelBuffer, matching: image.extent) else { return image }
+              let mask = personMask(for: pixelBuffer,
+                                    matching: image.extent,
+                                    featherSigma: featherSigma,
+                                    time: time,
+                                    reuseWindow: maskReuseWindow) else { return image }
         let blend = CIFilter.blendWithMask()
         blend.inputImage = image
         blend.maskImage = mask
@@ -34,14 +55,59 @@ final class CameraMatte {
         return (blend.outputImage ?? image).cropped(to: image.extent)
     }
 
+    /// The person alone, with everything behind them removed — or nil when
+    /// nobody could be found in the frame.
+    ///
+    /// Separate from `composite` because the two want opposite fallbacks: a
+    /// bubble can safely show the raw frame when segmentation comes up empty,
+    /// but the cut-out cannot — drawing an un-segmented frame there would stamp
+    /// down exactly the opaque rectangle the cut-out exists to get rid of.
+    func cutout(_ pixelBuffer: CVPixelBuffer,
+                featherSigma: Double = 0,
+                time: Double? = nil,
+                maskReuseWindow: Double = 0) -> CIImage? {
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        guard let mask = personMask(for: pixelBuffer,
+                                    matching: image.extent,
+                                    featherSigma: featherSigma,
+                                    time: time,
+                                    reuseWindow: maskReuseWindow) else { return nil }
+        let blend = CIFilter.blendWithMask()
+        blend.inputImage = image
+        blend.maskImage = mask
+        blend.backgroundImage = CIImage.empty()
+        return (blend.outputImage ?? image).cropped(to: image.extent)
+    }
+
     // MARK: Mask
 
-    private func personMask(for pixelBuffer: CVPixelBuffer, matching extent: CGRect) -> CIImage? {
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
-        guard (try? handler.perform([request])) != nil,
-              let maskBuffer = request.results?.first?.pixelBuffer else { return nil }
-        let mask = CIImage(cvPixelBuffer: maskBuffer)
-        guard mask.extent.width > 0, mask.extent.height > 0 else { return nil }
+    private func personMask(for pixelBuffer: CVPixelBuffer,
+                            matching extent: CGRect,
+                            featherSigma: Double,
+                            time: Double?,
+                            reuseWindow: Double) -> CIImage? {
+        var mask: CIImage?
+        if reuseWindow > 0, let time, let cachedMask, let cachedMaskTime,
+           abs(time - cachedMaskTime) < reuseWindow {
+            mask = cachedMask
+        } else {
+            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
+            if (try? handler.perform([request])) != nil,
+               let maskBuffer = request.results?.first?.pixelBuffer {
+                var generated = CIImage(cvPixelBuffer: maskBuffer)
+                // Blur at the mask's native size — after the stretch below this
+                // becomes a few soft pixels at full resolution.
+                if featherSigma > 0 {
+                    generated = generated.clampedToExtent()
+                        .applyingGaussianBlur(sigma: featherSigma)
+                        .cropped(to: generated.extent)
+                }
+                mask = generated
+                cachedMask = generated
+                cachedMaskTime = time
+            }
+        }
+        guard let mask, mask.extent.width > 0, mask.extent.height > 0 else { return nil }
         // The mask is lower-resolution; stretch it to line up with the frame.
         let sx = extent.width / mask.extent.width
         let sy = extent.height / mask.extent.height

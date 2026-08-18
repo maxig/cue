@@ -31,6 +31,11 @@ struct MouseActivity: Codable, Hashable {
 /// to the render size (origin top-left); `size` is the bubble diameter as a
 /// fraction of the frame width. When a recording has no placement the compositor
 /// falls back to the corner from its `CompositionPlan`.
+///
+/// Creative Mode's person cut-out reuses this type through
+/// `CompositionPlan.cutoutPlacement`, where `size` is instead a fraction of the
+/// frame *height* and `centerY` may run past 1 so the person can be cropped at
+/// the bottom edge.
 struct CameraPlacement: Codable, Hashable {
     var centerX: Double    // 0…1, left → right
     var centerY: Double    // 0…1, top → bottom
@@ -69,6 +74,26 @@ struct CompositionPlan: Codable, Hashable {
     /// Whether ScreenCaptureKit baked its native cursor into the retained screen
     /// track. Older plans decode as nil and are treated as true.
     var sourceShowsCursor: Bool?
+
+    /// Creative Mode's vertical layout. Nil renders the classic landscape
+    /// composition, so every plan saved before Creative Mode existed is
+    /// unaffected.
+    var creativeLayout: CreativeLayout?
+    /// How the camera is drawn. Nil means `.bubble`.
+    var cameraStyle: CameraStyle?
+    /// Placement for the person cut-out, kept apart from `cameraPlacement` so
+    /// switching styles doesn't clobber the bubble's position.
+    var cutoutPlacement: CameraPlacement?
+    /// Whether captions are burned into the current final.mp4.
+    var captionsEnabled: Bool?
+    var captionStyle: CaptionStyle?
+    /// Sidecar JSON of the caption track (`captions.json`), kept out of the
+    /// library index because word-level timings are large.
+    var captionsFileName: String?
+
+    var isCreative: Bool { creativeLayout != nil }
+    var effectiveCameraStyle: CameraStyle { cameraStyle ?? .bubble }
+    var burnsCaptions: Bool { captionsEnabled == true }
 }
 
 /// Metadata for one captured session. Media files live in a per-recording
@@ -111,6 +136,11 @@ struct Recording: Identifiable, Codable, Hashable {
     var transcriptVTT: String?
     var summary: String?
 
+    /// The teleprompter script this was recorded from, kept as notes so the
+    /// wording is still around when you cut a follow-up take.
+    var notes: String?
+    var notesUpdatedAt: Date?
+
     /// Per-field clocks used to reconcile offline native edits with changes
     /// made in the web Library. Optional so recordings saved by older Cue
     /// versions continue to decode; the first successful sync backfills them.
@@ -140,6 +170,8 @@ struct Recording: Identifiable, Codable, Hashable {
          transcript: String? = nil,
          transcriptVTT: String? = nil,
          summary: String? = nil,
+         notes: String? = nil,
+         notesUpdatedAt: Date? = nil,
          titleUpdatedAt: Date? = nil,
          transcriptUpdatedAt: Date? = nil,
          summaryUpdatedAt: Date? = nil,
@@ -162,6 +194,8 @@ struct Recording: Identifiable, Codable, Hashable {
         self.transcript = transcript
         self.transcriptVTT = transcriptVTT
         self.summary = summary
+        self.notes = notes
+        self.notesUpdatedAt = notesUpdatedAt
         self.titleUpdatedAt = titleUpdatedAt ?? createdAt
         self.transcriptUpdatedAt = transcriptUpdatedAt
         self.summaryUpdatedAt = summaryUpdatedAt

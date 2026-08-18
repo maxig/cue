@@ -269,6 +269,7 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainNibFile = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Cue records your microphone so your narration is captured in your recordings.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Cue turns the words you say into captions for your videos. This happens on your Mac.";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -308,6 +309,7 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainNibFile = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Cue records your microphone so your narration is captured in your recordings.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Cue turns the words you say into captions for your videos. This happens on your Mac.";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

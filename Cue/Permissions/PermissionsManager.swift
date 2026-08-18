@@ -3,9 +3,10 @@ import AVFoundation
 import CoreGraphics
 import AppKit
 import ScreenCaptureKit
+import Speech
 
-/// Tracks and requests the three privacy permissions Cue needs:
-/// screen recording, camera, and microphone.
+/// Tracks and requests the privacy permissions Cue needs: screen recording,
+/// camera, microphone, and — for captions — speech recognition.
 @MainActor
 final class PermissionsManager: ObservableObject {
 
@@ -20,6 +21,10 @@ final class PermissionsManager: ObservableObject {
     @Published private(set) var camera: Status = .notDetermined
     @Published private(set) var microphone: Status = .notDetermined
     @Published private(set) var screenRecording: Status = .notDetermined
+    /// Needed to transcribe recordings on this Mac for captions. Unlike the
+    /// others this one is optional — without it captions fall back to the
+    /// server transcript.
+    @Published private(set) var speechRecognition: Status = .notDetermined
 
     init() { refresh() }
 
@@ -34,6 +39,7 @@ final class PermissionsManager: ObservableObject {
     func refresh() {
         camera = Self.avStatus(for: .video)
         microphone = Self.avStatus(for: .audio)
+        speechRecognition = Self.speechStatus()
         // CGPreflight returns false both when denied and when not-yet-requested;
         // we surface it as `.notDetermined` until the user has clearly denied.
         if CGPreflightScreenCaptureAccess() {
@@ -79,6 +85,14 @@ final class PermissionsManager: ObservableObject {
         }
     }
 
+    private static func speechStatus() -> Status {
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized: return .granted
+        case .notDetermined: return .notDetermined
+        default: return .denied
+        }
+    }
+
     // MARK: Requests
 
     func requestCamera() async {
@@ -89,6 +103,16 @@ final class PermissionsManager: ObservableObject {
     func requestMicrophone() async {
         let granted = await AVCaptureDevice.requestAccess(for: .audio)
         microphone = granted ? .granted : .denied
+    }
+
+    /// Asks for speech-recognition access, used to transcribe recordings on
+    /// this Mac for captions. Prompt this while the user is idle — never once a
+    /// recording is under way.
+    func requestSpeechRecognition() async {
+        let status = await withCheckedContinuation { (continuation: CheckedContinuation<SFSpeechRecognizerAuthorizationStatus, Never>) in
+            SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
+        }
+        speechRecognition = status == .authorized ? .granted : .denied
     }
 
     /// Triggers the system screen-recording prompt. macOS grants this on the

@@ -164,6 +164,15 @@ final class Preferences: ObservableObject {
         static let aspectMode = "cue.canvas.aspectMode"
         static let captureFPS = "cue.capture.fps"
         static let cinematicEffects = "cue.capture.cinematicEffects"
+        static let creativeEnabled = "cue.creative.enabled"
+        static let creativeLayout = "cue.creative.layout"
+        static let scriptDraft = "cue.creative.scriptDraft"
+        static let captionsEnabled = "cue.captions.enabled"
+        static let captionStyle = "cue.captions.style"
+        static let captionLocale = "cue.captions.locale"
+        static let teleprompterFontSize = "cue.teleprompter.fontSize"
+        static let teleprompterAutoScroll = "cue.teleprompter.autoScroll"
+        static let teleprompterSpeed = "cue.teleprompter.speed"
     }
 
     @Published var cameraBubbleShape: CameraBubbleShape {
@@ -217,6 +226,40 @@ final class Preferences: ObservableObject {
     @Published var cinematicEffectsEnabled: Bool {
         didSet { defaults.set(cinematicEffectsEnabled, forKey: Key.cinematicEffects) }
     }
+    /// Records vertically for Shorts/TikTok/Reels, cutting you out of your
+    /// background instead of boxing you into a bubble.
+    @Published var creativeModeEnabled: Bool {
+        didSet { defaults.set(creativeModeEnabled, forKey: Key.creativeEnabled) }
+    }
+    @Published var creativeLayout: CreativeLayout {
+        didSet { defaults.set(creativeLayout.rawValue, forKey: Key.creativeLayout) }
+    }
+    /// The teleprompter script. Kept across launches and takes — re-recording
+    /// the same script is the normal case.
+    @Published var scriptDraft: String {
+        didSet { defaults.set(scriptDraft, forKey: Key.scriptDraft) }
+    }
+    /// Burns spoken words into the video as captions (Creative Mode only).
+    @Published var captionsEnabled: Bool {
+        didSet { defaults.set(captionsEnabled, forKey: Key.captionsEnabled) }
+    }
+    @Published var captionStyle: CaptionStyle {
+        didSet { defaults.set(captionStyle.rawValue, forKey: Key.captionStyle) }
+    }
+    /// Language to transcribe in. Nil follows the Mac's own language.
+    @Published var captionLocaleIdentifier: String? {
+        didSet { defaults.set(captionLocaleIdentifier, forKey: Key.captionLocale) }
+    }
+    @Published var teleprompterFontSize: Double {
+        didSet { defaults.set(teleprompterFontSize, forKey: Key.teleprompterFontSize) }
+    }
+    @Published var teleprompterAutoScroll: Bool {
+        didSet { defaults.set(teleprompterAutoScroll, forKey: Key.teleprompterAutoScroll) }
+    }
+    /// Auto-scroll speed in points per second.
+    @Published var teleprompterSpeed: Double {
+        didSet { defaults.set(teleprompterSpeed, forKey: Key.teleprompterSpeed) }
+    }
     @Published var onboardingDone: Bool {
         didSet { defaults.set(onboardingDone, forKey: Key.onboardingDone) }
     }
@@ -247,6 +290,17 @@ final class Preferences: ObservableObject {
         aspectMode = AspectRatioMode(rawValue: defaults.string(forKey: Key.aspectMode) ?? "") ?? .sixteenNine
         captureFPS = defaults.integer(forKey: Key.captureFPS) == 60 ? 60 : 30
         cinematicEffectsEnabled = defaults.object(forKey: Key.cinematicEffects) as? Bool ?? true
+        creativeModeEnabled = defaults.bool(forKey: Key.creativeEnabled)
+        creativeLayout = CreativeLayout(rawValue: defaults.string(forKey: Key.creativeLayout) ?? "") ?? .screenFill
+        scriptDraft = defaults.string(forKey: Key.scriptDraft) ?? ""
+        captionsEnabled = defaults.object(forKey: Key.captionsEnabled) as? Bool ?? true
+        captionStyle = CaptionStyle(rawValue: defaults.string(forKey: Key.captionStyle) ?? "") ?? .boldOutline
+        captionLocaleIdentifier = defaults.string(forKey: Key.captionLocale)
+        let promptSize = defaults.double(forKey: Key.teleprompterFontSize)
+        teleprompterFontSize = promptSize == 0 ? 24 : min(max(promptSize, 14), 48)
+        teleprompterAutoScroll = defaults.object(forKey: Key.teleprompterAutoScroll) as? Bool ?? true
+        let promptSpeed = defaults.double(forKey: Key.teleprompterSpeed)
+        teleprompterSpeed = promptSpeed == 0 ? 40 : min(max(promptSpeed, 10), 120)
         onboardingDone = defaults.bool(forKey: Key.onboardingDone)
         lastCameraID = defaults.string(forKey: Key.lastCameraID)
         lastMicrophoneID = defaults.string(forKey: Key.lastMicID)
