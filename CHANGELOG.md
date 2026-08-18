@@ -4,6 +4,25 @@ The `## <version> — <date>` section matching a release tag becomes the GitHub
 release body **and** the in-app Sparkle update notes. Write it for users:
 what changed and why they'd care, not commit titles.
 
+## 1.6.1 — 2026-08-18
+
+Choosing the part of the screen to record actually works now. The picker in
+1.6.0 was rough enough to be unusable.
+
+- The controls sit in the middle of the area you're choosing and move with it,
+  instead of floating somewhere else on the screen looking like a stray dark
+  bar. They also show how big your selection is in real pixels, and say so when
+  it's smaller than the video it will be stretched to.
+- Choosing an area no longer leaves you looking at an empty screen. Opening the
+  picker closes the Cue menu, so there was nothing left to press Record in — the
+  main button is now Start Recording and goes straight into the countdown. Save
+  Area is still there for setting up your framing ahead of time.
+- The corner handles show a resize pointer, and the area itself shows a hand, so
+  it's clear what you can drag.
+- Getting the edges right is much easier: the rectangle snaps to the sides and
+  middle of your screen when it's close, resizing snaps to exactly full screen
+  height, and it can't be dragged half off the display any more.
+
 ## 1.6.0 — 2026-08-18
 
 Vertical recordings can now frame any part of your screen, and the two things
