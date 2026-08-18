@@ -193,6 +193,8 @@ struct RecorderPopoverView: View {
 
     private var creativeOn: Bool { app.preferences.creativeModeEnabled }
 
+    private var hasRegion: Bool { app.preferences.creativeScreenRegion != nil }
+
     private var scriptWordCount: Int {
         app.preferences.scriptDraft.split(whereSeparator: \.isWhitespace).count
     }
@@ -231,6 +233,34 @@ struct RecorderPopoverView: View {
                         }
                     }
                 )
+
+                if app.canChooseScreenRegion {
+                    ControlRow(
+                        systemImage: "crop",
+                        iconColor: hasRegion ? Theme.accent : Theme.secondaryText
+                    ) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Area").font(.cueRowTitle)
+                            Text(hasRegion ? "Part of the screen" : "Middle of the screen")
+                                .font(.cueCaption)
+                                .foregroundStyle(Theme.secondaryText)
+                                .lineLimit(1)
+                        }
+                    } trailing: {
+                        HStack(spacing: 6) {
+                            if hasRegion {
+                                Button("Reset") { app.clearScreenRegion() }
+                                    .buttonStyle(.plain)
+                                    .font(.cueCaption)
+                                    .foregroundStyle(Theme.secondaryText)
+                            }
+                            Button(hasRegion ? "Change…" : "Choose…") { app.chooseScreenRegion() }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                }
 
                 ControlRow(
                     systemImage: "captions.bubble",

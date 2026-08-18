@@ -84,6 +84,8 @@ struct CompositionPlan: Codable, Hashable {
     /// Placement for the person cut-out, kept apart from `cameraPlacement` so
     /// switching styles doesn't clobber the bubble's position.
     var cutoutPlacement: CameraPlacement?
+    /// Which part of the screen fills the vertical frame. Nil centres it.
+    var screenRegion: ScreenRegion?
     /// Whether captions are burned into the current final.mp4.
     var captionsEnabled: Bool?
     var captionStyle: CaptionStyle?
