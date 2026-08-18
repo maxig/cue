@@ -1,9 +1,10 @@
 import SwiftUI
+import Speech
 
-/// The five settings sections, shown as a compact icon tab bar so the popover
-/// never becomes one endless scroll.
+/// The settings sections, shown as a compact icon tab bar so the popover never
+/// becomes one endless scroll.
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case recording, camera, canvas, sharing, general
+    case recording, camera, canvas, creative, sharing, general
 
     var id: String { rawValue }
 
@@ -12,6 +13,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .recording: return "Recording"
         case .camera: return "Camera"
         case .canvas: return "Canvas"
+        case .creative: return "Vertical"
         case .sharing: return "Sharing"
         case .general: return "General"
         }
@@ -22,6 +24,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .recording: return "record.circle"
         case .camera: return "web.camera"
         case .canvas: return "aspectratio"
+        case .creative: return "captions.bubble"
         case .sharing: return "square.and.arrow.up"
         case .general: return "gearshape"
         }
@@ -69,6 +72,10 @@ struct SettingsView: View {
         case .canvas:
             formatCard
             backgroundCard
+        case .creative:
+            creativeCard
+            captionsCard
+            teleprompterCard
         case .sharing:
             sharingCard
         case .general:
@@ -109,6 +116,83 @@ struct SettingsView: View {
             Caption(prefs.aspectMode == .sixteenNine
                     ? "Every recording is a clean 16:9 frame. Screens that aren't 16:9 are fit onto the canvas — never cropped or black-barred."
                     : "Recordings keep the captured screen's own proportions.")
+        }
+    }
+
+    private var creativeCard: some View {
+        Card("Vertical video") {
+            ToggleRow("Creative Mode",
+                      isOn: Binding(get: { prefs.creativeModeEnabled },
+                                    set: { prefs.creativeModeEnabled = $0 }))
+            Caption("Records a tall 9:16 video for Shorts, TikTok and Reels, and removes the background behind you so only you appear over the screen.")
+            StackedRow("Layout") {
+                Picker("", selection: Binding(get: { prefs.creativeLayout },
+                                              set: { prefs.creativeLayout = $0 })) {
+                    ForEach(CreativeLayout.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+            }
+            Caption(prefs.creativeLayout.detail)
+        }
+    }
+
+    private var captionsCard: some View {
+        Card("Captions") {
+            ToggleRow("Add captions automatically",
+                      isOn: Binding(get: { prefs.captionsEnabled },
+                                    set: { prefs.captionsEnabled = $0 }))
+            Caption("After each vertical recording, Cue writes out what you said and puts it on screen — most people watch with the sound off.")
+
+            StackedRow("Style") {
+                CaptionStylePicker(selection: Binding(get: { prefs.captionStyle },
+                                                      set: { prefs.captionStyle = $0 }))
+            }
+
+            LabeledRow("Language") {
+                Picker("", selection: Binding(get: { prefs.captionLocaleIdentifier ?? "" },
+                                              set: { prefs.captionLocaleIdentifier = $0.isEmpty ? nil : $0 })) {
+                    Text("Automatic").tag("")
+                    ForEach(captionLocales, id: \.0) { Text($0.1).tag($0.0) }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 150)
+            }
+            Caption(app.permissions.speechRecognition == .denied
+                    ? "Cue can't listen to your recordings on this Mac, so captions fall back to the transcript from your Cue server. You can change this in System Settings ▸ Privacy & Security ▸ Speech Recognition."
+                    : "The words are worked out on this Mac, so this works offline and nothing is sent anywhere.")
+        }
+    }
+
+    /// Languages this Mac can actually transcribe without a network round-trip.
+    /// Offering the rest would just be a list of ways for captions to fail.
+    private var captionLocales: [(String, String)] {
+        let identifiers = Set(
+            SFSpeechRecognizer.supportedLocales()
+                .filter { SFSpeechRecognizer(locale: $0)?.supportsOnDeviceRecognition == true }
+                .map(\.identifier)
+        )
+        return identifiers
+            .map { ($0, Locale.current.localizedString(forIdentifier: $0) ?? $0) }
+            .sorted { $0.1.localizedCaseInsensitiveCompare($1.1) == .orderedAscending }
+    }
+
+    private var teleprompterCard: some View {
+        Card("Script panel") {
+            Caption("Your script floats beside what you're recording. It's never in the video — Cue's own windows are left out of every capture.")
+            StackedRow("Text size") {
+                Slider(value: Binding(get: { prefs.teleprompterFontSize },
+                                      set: { prefs.teleprompterFontSize = $0 }), in: 14...48)
+            }
+            ToggleRow("Scroll by itself",
+                      isOn: Binding(get: { prefs.teleprompterAutoScroll },
+                                    set: { prefs.teleprompterAutoScroll = $0 }))
+            if prefs.teleprompterAutoScroll {
+                StackedRow("Scrolling speed") {
+                    Slider(value: Binding(get: { prefs.teleprompterSpeed },
+                                          set: { prefs.teleprompterSpeed = $0 }), in: 10...120)
+                }
+                Caption("Point at the panel to pause it while you catch up.")
+            }
         }
     }
 

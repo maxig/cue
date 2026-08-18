@@ -138,8 +138,10 @@ private struct RecordingDetailView: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
                 headerBlock
                 playerBlock
+                creativeBlock
                 cameraStudioBlock
                 shareBlock
+                notesBlock
                 insightsBlock
             }
             .padding(28)
@@ -155,12 +157,93 @@ private struct RecordingDetailView: View {
 
     /// Post-record camera reposition/resize — only for recordings that have a
     /// camera track and a saved composition plan (i.e. captured with post-edit
-    /// support). `.id` resets the editor's state when the selection changes.
+    /// support). Vertical clips are edited in the Creative Editor instead, which
+    /// supersedes this card. `.id` resets state when the selection changes.
     @ViewBuilder
     private var cameraStudioBlock: some View {
-        if let plan = recording.plan,
+        if let plan = recording.plan, !plan.isCreative,
            recording.cameraFileName != nil || plan.activityFileName != nil {
             CameraStudioCard(recording: recording).id(recording.id)
+        }
+    }
+
+    /// Only promise the background cut-out when there's actually a camera in
+    /// the recording to cut out of.
+    private func creativeBlurb(plan: CompositionPlan) -> String {
+        let hasCamera = recording.cameraFileName != nil || recording.captureMode == .cameraOnly
+        if plan.isCreative {
+            return hasCamera
+                ? "Move yourself around the frame, change the layout, or restyle the captions, then re-render."
+                : "Change the layout or restyle the captions, then re-render."
+        }
+        return hasCamera
+            ? "Reframe this recording for Shorts, TikTok and Reels — you're cut out of your background and placed wherever you like."
+            : "Reframe this recording as a tall video for Shorts, TikTok and Reels."
+    }
+
+    /// Entry point to the vertical-video editor, plus captions for recordings
+    /// that don't have them yet.
+    @ViewBuilder
+    private var creativeBlock: some View {
+        if let plan = recording.plan {
+            GlassCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label(plan.isCreative ? "Vertical video" : "Make it vertical",
+                          systemImage: "rectangle.portrait.on.rectangle.portrait")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(creativeBlurb(plan: plan))
+                        .font(.cueCaption)
+                        .foregroundStyle(Theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 10) {
+                        Button {
+                            app.openEditor(for: recording)
+                        } label: {
+                            Label(plan.isCreative ? "Open Creative Editor" : "Open in Creative Editor",
+                                  systemImage: "wand.and.stars")
+                        }
+                        .buttonStyle(.prominentGlass)
+
+                        if !plan.burnsCaptions {
+                            Button {
+                                Task { await app.generateCaptions(for: recording) }
+                            } label: {
+                                Label(app.captionGenerator.isWorking(on: recording.id)
+                                      ? (app.captionGenerator.phase.title ?? "Working…")
+                                      : "Add Captions",
+                                      systemImage: "captions.bubble")
+                            }
+                            .buttonStyle(.glassControl)
+                            .disabled(app.captionGenerator.phase != .idle || app.isRecomposing != nil)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The script this was recorded from, kept as notes.
+    @ViewBuilder
+    private var notesBlock: some View {
+        if let notes = recording.notes, !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            GlassCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Label("Script", systemImage: "text.aligncenter")
+                            .font(.system(size: 14, weight: .semibold))
+                        Spacer()
+                        Button("Copy") { app.copyLink(notes) }
+                            .buttonStyle(.glassControl)
+                    }
+                    Text(notes)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Theme.secondaryText)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
     }
 
@@ -178,13 +261,29 @@ private struct RecordingDetailView: View {
         }
     }
 
+    /// The composed clip's own shape, so vertical recordings aren't forced into
+    /// a landscape box.
+    private var playerAspectRatio: CGFloat {
+        guard let width = recording.width, let height = recording.height, height > 0 else {
+            return 16.0 / 9.0
+        }
+        return CGFloat(width) / CGFloat(height)
+    }
+
+    /// When the video file was last written. Re-rendering swaps `final.mp4` in
+    /// place, so this is what tells the player the picture has changed.
+    private func mediaRevision(_ url: URL) -> Date? {
+        try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
+    }
+
     @ViewBuilder
     private var playerBlock: some View {
         if let url = app.store.primaryMediaURL(for: recording) {
             // AppKit's AVPlayerView (not SwiftUI's VideoPlayer, whose generic
             // metadata instantiation crashes on this toolchain).
-            PlayerView(url: url)
-                .aspectRatio(16.0/9.0, contentMode: .fit)
+            PlayerView(url: url, revision: mediaRevision(url))
+                .aspectRatio(playerAspectRatio, contentMode: .fit)
+                .frame(maxHeight: playerAspectRatio < 1 ? 520 : .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
@@ -586,11 +685,10 @@ private struct CameraStudioCard: View {
 
                 Button {
                     Task {
-                        await app.recompose(
-                            recording,
-                            placement: recording.cameraFileName == nil ? nil : placement,
-                            cinematicEffects: cinematicEffects
-                        )
+                        guard var plan = recording.plan else { return }
+                        if recording.cameraFileName != nil { plan.cameraPlacement = placement }
+                        plan.cinematicEffectsEnabled = cinematicEffects
+                        await app.recompose(recording, plan: plan)
                     }
                 } label: {
                     Label(busy ? "Re-rendering…" : "Apply Studio edits",
@@ -683,18 +781,33 @@ private struct BrandMarkLarge: View {
 /// `getSuperclassMetadata`) on the current toolchain.
 private struct PlayerView: NSViewRepresentable {
     let url: URL
+    /// Changes whenever the file at `url` is rewritten. Re-rendering replaces
+    /// `final.mp4` in place, so the URL alone never changes and the player
+    /// would happily keep showing the old cut.
+    var revision: Date?
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.controlsStyle = .inline
         view.videoGravity = .resizeAspect
         view.player = AVPlayer(url: url)
+        context.coordinator.url = url
+        context.coordinator.revision = revision
         return view
     }
 
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var url: URL?
+        var revision: Date?
+    }
+
     func updateNSView(_ view: AVPlayerView, context: Context) {
-        let currentURL = (view.player?.currentItem?.asset as? AVURLAsset)?.url
-        guard currentURL != url else { return }
+        guard context.coordinator.url != url || context.coordinator.revision != revision else { return }
+        context.coordinator.url = url
+        context.coordinator.revision = revision
+        view.player?.pause()
         view.player = AVPlayer(url: url)
     }
 

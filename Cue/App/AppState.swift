@@ -26,6 +26,10 @@ final class AppState: ObservableObject {
     let cameraEngine = CameraEngine()
     let cameraBubble = CameraBubbleController()
     let captureIndicator = CaptureRegionIndicator()
+    /// The floating script panel. Excluded from capture like every other Cue
+    /// window, so it's visible to the presenter but never in the video.
+    let teleprompter = TeleprompterController()
+    let captionGenerator = CaptionGenerator()
     private(set) lazy var engine = RecordingEngine(store: store, camera: cameraEngine)
 
     /// Live-preview (popover-open) state: whether the camera/region preview is
@@ -93,6 +97,10 @@ final class AppState: ObservableObject {
     @Published var justFinished: Recording?
     @Published var errorMessage: String?
 
+    /// Whether the script panel was actually up for the take being recorded, so
+    /// only those recordings keep the script as notes.
+    private var usedTeleprompter = false
+
     private var elapsedTimer: Timer?
     private var countdownTask: Task<Void, Never>?
     private var captureStartTask: Task<Void, Never>?
@@ -110,7 +118,9 @@ final class AppState: ObservableObject {
                           devices.objectWillChange,
                           store.objectWillChange,
                           uploadSettings.objectWillChange,
-                          preferences.objectWillChange] {
+                          preferences.objectWillChange,
+                          teleprompter.objectWillChange,
+                          captionGenerator.objectWillChange] {
             publisher
                 .sink { [weak self] _ in self?.objectWillChange.send() }
                 .store(in: &cancellables)
@@ -220,6 +230,11 @@ final class AppState: ObservableObject {
 
         startCameraPreviewIfNeeded()
         overlay.show(appState: self)
+        if preferences.creativeModeEnabled && !preferences.scriptDraft.isEmpty {
+            teleprompter.show(appState: self, mode: .editing)
+        }
+        // Covers the panel being opened by hand as well as automatically.
+        usedTeleprompter = teleprompter.isVisible
 
         let seconds = config.countdownSeconds
         captureReady = false
@@ -243,7 +258,9 @@ final class AppState: ObservableObject {
                                             background: self.preferences.canvasBackground,
                                             aspectMode: self.preferences.aspectMode,
                                             fps: self.preferences.captureFPS,
-                                            cinematicEffects: self.preferences.cinematicEffectsEnabled)
+                                            cinematicEffects: self.preferences.cinematicEffectsEnabled,
+                                            creativeLayout: self.preferences.creativeModeEnabled
+                                                ? self.preferences.creativeLayout : nil)
                 self.captureStartTask = nil
                 self.captureReady = true
                 self.enterRecordingIfReady()
@@ -252,6 +269,7 @@ final class AppState: ObservableObject {
                 self.errorMessage = error.localizedDescription
                 self.state = .idle
                 self.overlay.hide()
+                self.teleprompter.hide()
                 self.teardownCamera()
             }
         }
@@ -285,6 +303,11 @@ final class AppState: ObservableObject {
         micActive = config.microphoneEnabled && config.microphone?.isNone == false
         cameraActive = config.cameraEnabled && config.camera?.isNone == false
         captureIndicator.hide()   // the region hint must never appear in the video
+        // The script stops being something to edit and becomes something to
+        // read; auto-scroll starts here, in step with content-start.
+        if teleprompter.isVisible {
+            teleprompter.setMode(.prompting, autoScroll: preferences.teleprompterAutoScroll)
+        }
         elapsed = 0
         startElapsedTimer()
     }
@@ -343,12 +366,28 @@ final class AppState: ObservableObject {
             overlay.hide()
             cameraBubble.hide()
             captureIndicator.hide()
+            teleprompter.hide()
             // `engine.stop` releases the camera device (green light off) as soon
             // as the raw tracks are written, not after the whole composition.
-            let recording = await engine.stop { [weak self] in
+            var recording = await engine.stop { [weak self] in
                 self?.cameraEngine.stopSession()
                 self?.livePreviewActive = false
                 self?.previewSignature = nil
+            }
+            // Only the takes actually read from the script keep it. The draft
+            // outlives a session by design, so stamping it on unconditionally
+            // would attach it to every later screencast too.
+            if var finished = recording, usedTeleprompter, !preferences.scriptDraft.isEmpty {
+                finished.notes = preferences.scriptDraft
+                finished.notesUpdatedAt = .now
+                store.upsert(finished)
+                recording = finished
+            }
+            usedTeleprompter = false
+            // Captions are burned in before sharing, so the copy that goes to
+            // the cloud is the one people actually watch.
+            if let finished = recording, shouldCaption(finished) {
+                recording = await generateCaptions(for: finished) ?? finished
             }
             state = .idle
             if let recording {
@@ -358,13 +397,55 @@ final class AppState: ObservableObject {
         case .countdown:
             // Capture is already rolling during the countdown — discard it.
             state = .idle
+            usedTeleprompter = false
             await engine.cancel()
             overlay.hide()
+            teleprompter.hide()
             teardownCamera()
         default:
             state = .idle
+            usedTeleprompter = false
             overlay.hide()
+            teleprompter.hide()
             teardownCamera()
+        }
+    }
+
+    // MARK: Captions
+
+    /// Whether a just-finished recording should get captions without being asked.
+    private func shouldCaption(_ recording: Recording) -> Bool {
+        preferences.creativeModeEnabled && preferences.captionsEnabled
+            && recording.plan != nil && recording.finalFileName != nil
+    }
+
+    /// Transcribes and burns captions into a recording's video. Failures are
+    /// reported but never block the recording itself — a video without captions
+    /// is far better than no video.
+    @discardableResult
+    func generateCaptions(for recording: Recording) async -> Recording? {
+        guard recording.plan != nil else {
+            errorMessage = "Cue can't add captions to this recording — it was made before captions existed. Record a new one to use them."
+            return nil
+        }
+        let locale = preferences.captionLocaleIdentifier.map(Locale.init(identifier:)) ?? Locale.current
+        do {
+            return try await captionGenerator.generate(
+                for: recording,
+                style: preferences.captionStyle,
+                locale: locale,
+                store: store,
+                render: { [weak self] recording, plan in
+                    await self?.recompose(recording, plan: plan)
+                }
+            )
+        } catch {
+            NSLog("Cue caption generation failed: \(error)")
+            // Cue's own failures are written for people to read; anything else
+            // would put a raw system string in front of the user.
+            errorMessage = (error as? CaptionGenerator.Failure)?.errorDescription
+                ?? "Cue couldn't add captions to this recording. The video was saved without them."
+            return nil
         }
     }
 
@@ -906,33 +987,39 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Re-renders a recording's `final.mp4` from its retained raw tracks with a
-    /// new camera placement (post-record reposition/resize). Needs a stored plan
-    /// + a camera track. The new media is composed in a temporary folder so a
-    /// failed edit cannot destroy the existing final video.
-    func recompose(_ recording: Recording, placement: CameraPlacement?, cinematicEffects: Bool) async {
+    /// Re-renders a recording's `final.mp4` from its retained raw tracks with an
+    /// edited plan (camera reposition, Creative Mode layout, burned-in
+    /// captions). Needs a stored plan. The new media is composed in a temporary
+    /// folder so a failed edit cannot destroy the existing final video.
+    @discardableResult
+    func recompose(_ recording: Recording, plan: CompositionPlan) async -> Recording? {
         guard isRecomposing == nil else {
             errorMessage = "Another recording is already being re-rendered."
-            return
+            return nil
         }
-        guard var plan = recording.plan else {
+        guard recording.plan != nil else {
             errorMessage = "This recording predates post-edit support — re-record to enable it."
-            return
+            return nil
         }
         let folder = store.folderURL(for: recording.id)
         let screenURL = recording.screenFileName.map { folder.appendingPathComponent($0) }
         let cameraURL = recording.cameraFileName.map { folder.appendingPathComponent($0) }
-        if let placement { plan.cameraPlacement = placement }
-        plan.cinematicEffectsEnabled = cinematicEffects
 
         let mouseActivity: MouseActivity? = {
-            guard cinematicEffects, let name = plan.activityFileName,
+            guard plan.cinematicEffectsEnabled == true, let name = plan.activityFileName,
                   let data = try? Data(contentsOf: folder.appendingPathComponent(name)) else { return nil }
             return try? JSONDecoder().decode(MouseActivity.self, from: data)
         }()
-        if recording.cameraFileName == nil && mouseActivity == nil {
-            errorMessage = "This recording has no editable camera or pointer activity."
-            return
+        let captions: [CaptionCue] = {
+            guard plan.burnsCaptions else { return [] }
+            let name = plan.captionsFileName ?? CaptionTrack.fileName
+            guard let data = try? Data(contentsOf: folder.appendingPathComponent(name)),
+                  let track = try? JSONDecoder.cue.decode(CaptionTrack.self, from: data) else { return [] }
+            return track.cues
+        }()
+        if recording.cameraFileName == nil && mouseActivity == nil && captions.isEmpty && !plan.isCreative {
+            errorMessage = "This recording has no editable camera, captions, or pointer activity."
+            return nil
         }
         let workFolder = folder.appendingPathComponent(".recompose-\(UUID().uuidString)", isDirectory: true)
 
@@ -943,25 +1030,11 @@ final class AppState: ObservableObject {
             defer { try? FileManager.default.removeItem(at: workFolder) }
 
             let output = try await VideoComposer.compose(
+                plan: plan,
                 screenURL: screenURL,
                 cameraURL: cameraURL,
-                bubbleShape: plan.bubbleShape,
-                mirrored: plan.mirrored,
-                cameraBackground: plan.cameraBackground,
-                corner: plan.corner,
-                padding: plan.padding,
-                background: plan.background,
-                aspectRatio: plan.aspectRatio.map { CGFloat($0) },
-                fps: plan.fps ?? 30,
-                cameraStartOffset: plan.cameraStartOffset,
-                leadTrim: plan.leadTrim,
-                cameraPlacement: plan.cameraPlacement,
-                cameraHiddenRanges: plan.cameraHiddenRanges,
-                screenPauseSpans: plan.screenPauseSpans,
-                cameraPauseSpans: plan.cameraPauseSpans,
                 mouseActivity: mouseActivity,
-                cinematicEffects: cinematicEffects,
-                drawCustomCursor: plan.sourceShowsCursor == false,
+                captions: captions,
                 outputURL: workFolder.appendingPathComponent("final.mp4")
             )
 
@@ -971,7 +1044,10 @@ final class AppState: ObservableObject {
                 try replaceFile(at: folder.appendingPathComponent("audio.m4a"), with: audioURL)
             }
 
-            var working = recording
+            // Re-read the record before writing: the editor holds the copy it
+            // opened with, and a title, transcript or note edited in the Library
+            // since then must not be rolled back by this render.
+            var working = latestRecording(recording.id) ?? recording
             working.plan = plan
             working.finalFileName = "final.mp4"
             if output.audioURL != nil { working.audioFileName = "audio.m4a" }
@@ -984,23 +1060,27 @@ final class AppState: ObservableObject {
             // deletion; otherwise keep the truthful remote status and warn that
             // the old shared version still exists.
             var cloudWarning: String?
-            if recording.shareURL != nil {
+            if working.shareURL != nil {
                 if let backend = uploadSettings.cueBackendService() {
                     do {
-                        try await backend.deleteRemote(recording: recording)
+                        try await backend.deleteRemote(recording: working)
                         working.share = .local
                         working.uploadBackend = nil
                     } catch {
-                        cloudWarning = "The edit was saved locally, but the previous cloud copy could not be removed: \(error.localizedDescription)"
+                        NSLog("Cue remote delete after re-render failed: \(error.localizedDescription)")
+                        cloudWarning = "Your edit was saved, but the shared copy couldn't be taken down. The old version is still online — try sharing again to replace it."
                     }
                 } else {
-                    cloudWarning = "The edit was saved locally. The previous cloud copy is still online; switch to the Cue server backend to remove it, or re-upload the edit."
+                    cloudWarning = "Your edit was saved. The shared copy is still the old version — upload it again to replace it."
                 }
             }
             store.upsert(working)
             if let cloudWarning { errorMessage = cloudWarning }
+            return working
         } catch {
-            errorMessage = "Re-render failed: \(error.localizedDescription)"
+            NSLog("Cue re-render failed: \(error.localizedDescription)")
+            errorMessage = "Cue couldn't finish re-rendering this recording. Your original video is untouched."
+            return nil
         }
     }
 
@@ -1071,6 +1151,42 @@ final class AppState: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         libraryWindow?.makeKeyAndOrderFront(nil)
         Task { await syncLibrary() }
+    }
+
+    // MARK: Creative editor window
+
+    private var editorWindow: NSWindow?
+    private var editorModel: CreativeEditorModel?
+
+    /// Opens the vertical-video editor for a recording. One window is reused;
+    /// opening a different recording replaces its contents.
+    func openEditor(for recording: Recording) {
+        guard recording.plan != nil else {
+            errorMessage = "This recording predates post-edit support — re-record to enable it."
+            return
+        }
+        // Release the previous preview's player before building the next one.
+        editorModel?.teardown()
+        let model = CreativeEditorModel(recording: recording, app: self)
+        editorModel = model
+
+        let hosting = NSHostingController(rootView: CreativeEditorView(model: model)
+            .environmentObject(self))
+        if let window = editorWindow {
+            window.contentViewController = hosting
+        } else {
+            let window = NSWindow(contentViewController: hosting)
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 900, height: 700))
+            window.contentMinSize = NSSize(width: 720, height: 560)
+            window.isReleasedWhenClosed = false
+            window.center()
+            editorWindow = window
+        }
+        editorWindow?.title = "Creative Editor — \(recording.title)"
+        NSApp.activate(ignoringOtherApps: true)
+        editorWindow?.makeKeyAndOrderFront(nil)
+        Task { await model.load() }
     }
 
     func delete(_ recording: Recording) {

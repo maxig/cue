@@ -27,9 +27,10 @@ Worker that also does AI transcription).
 - 🪶 **Menubar-first** — a tiny agent, no Dock clutter. Click, record, done.
 - 🖥️ **Native capture** — ScreenCaptureKit + AVFoundation. Screen, window, region, or camera-only.
 - 🎥 **Camera bubble** — a draggable webcam overlay, baked into the final video as picture-in-picture.
+- 📱 **Creative Mode** — vertical 9:16 recording for Shorts / TikTok / Reels, with your background removed, burned-in captions, and a teleprompter that never lands in the video.
 - 🔗 **Link first** — Cue allocates and copies the share URL before upload; visitors see a waiting page until media is ready.
 - ☁️ **Self-hosted sharing** — local (MinIO + Node) or Cloudflare (R2 + D1 + Worker), your choice.
-- 🤖 **AI transcription** — Whisper via Workers AI on the Cloudflare backend.
+- 🤖 **Transcription** — on-device for captions (offline, any backend); Whisper via Workers AI for transcripts, summaries and chapters on the Cloudflare backend.
 - ✨ **Liquid Glass UI** — adopts Apple's macOS 26 design language, with a tuned fallback on macOS 15.
 
 > **Status:** Phase 2 complete — the native recording and sharing pipeline, AI
@@ -49,6 +50,18 @@ Worker that also does AI transcription).
   then composed into a single shareable **`final.mp4`** (camera as a shaped PiP, audio mixed).
 - A configurable **camera bubble** (circle / rounded-square / square) plus post-record positioning and sizing.
 - Custom aspect ratios, padding, and canvas backgrounds for polished screen recordings.
+- **Creative Mode** — 1080×1920 vertical output for YouTube Shorts, TikTok and Instagram
+  Reels, in three layouts (screen-fill with you in front, screen-over-you stacked, or you
+  alone). Person segmentation removes your background and drops the bubble entirely, so
+  you appear as a cut-out rather than a boxed PiP.
+- A **Creative Editor** window with a live preview rendered by the real compositor: drag
+  and resize yourself anywhere in the frame, switch layout, restyle captions, then
+  re-render and replace the video in place — always from the retained raw tracks.
+- **Burned-in captions** for sound-off viewers, transcribed **on device** (Speech
+  framework; no backend required, works offline) with a server-VTT fallback. Four presets,
+  including word-by-word highlighting.
+- A **teleprompter panel** that floats beside your recording, auto-scrolls, pauses on
+  hover, and is excluded from capture — the script is saved with the recording as notes.
 - Pluggable sharing via three backends — local-only, bucket-only, or the full Cue server.
 - A minimalist **web player** page per recording, with a unique share URL.
 - **Owner controls**: enable/disable a link, remove from cloud, or delete everywhere.
