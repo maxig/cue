@@ -86,6 +86,9 @@ private struct ScreenRegionPickerView: View {
     @State private var rect: CGRect = .zero
     @State private var dragStart: CGRect?
     @State private var isDragging = false
+    /// Set while a corner is being dragged, so the move gesture on the overlay
+    /// underneath keeps its hands off the same drag.
+    @State private var resizing = false
 
     private static let aspect = 9.0 / 16.0
     private static let minHeight: CGFloat = 160
@@ -101,6 +104,10 @@ private struct ScreenRegionPickerView: View {
                 hud(in: geo.size)
             }
             .contentShape(Rectangle())
+            // Grabbing anywhere moves the area. Previously only the selection's
+            // own body worked, and on a tall 9:16 column the controls covered
+            // most of it — leaving almost nothing to actually drag.
+            .gesture(moveGesture(in: geo.size))
             .onAppear {
                 if rect == .zero { rect = clamped(denormalize(initial, in: geo.size), in: geo.size) }
             }
@@ -136,23 +143,27 @@ private struct ScreenRegionPickerView: View {
                 .frame(width: rect.width, height: rect.height)
                 .position(x: rect.midX, y: rect.midY)
                 .cursor(isDragging ? .closedHand : .openHand)
-                .gesture(
-                    DragGesture(minimumDistance: 1)
-                        .onChanged { value in
-                            let base = dragStart ?? rect
-                            if dragStart == nil { dragStart = rect; isDragging = true }
-                            let moved = CGRect(x: base.minX + value.translation.width,
-                                               y: base.minY + value.translation.height,
-                                               width: base.width, height: base.height)
-                            rect = clamped(snapped(moved, in: size), in: size)
-                        }
-                        .onEnded { _ in dragStart = nil; isDragging = false }
-                )
 
             ForEach(Corner.allCases, id: \.self) { corner in
                 handle(corner, in: size)
             }
         }
+    }
+
+    /// Moves the selection by the drag, from wherever on the display the drag
+    /// began — dimmed area included.
+    private func moveGesture(in size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                guard !resizing else { return }
+                let base = dragStart ?? rect
+                if dragStart == nil { dragStart = rect; isDragging = true }
+                let moved = CGRect(x: base.minX + value.translation.width,
+                                   y: base.minY + value.translation.height,
+                                   width: base.width, height: base.height)
+                rect = clamped(snapped(moved, in: size), in: size)
+            }
+            .onEnded { _ in dragStart = nil; isDragging = false }
     }
 
     private func handle(_ corner: Corner, in size: CGSize) -> some View {
@@ -166,21 +177,22 @@ private struct ScreenRegionPickerView: View {
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
                         let base = dragStart ?? rect
-                        if dragStart == nil { dragStart = rect; isDragging = true }
+                        if dragStart == nil { dragStart = rect; isDragging = true; resizing = true }
                         let resized = corner.resize(base, by: value.translation,
                                                     aspect: Self.aspect, minHeight: Self.minHeight,
                                                     screen: size, snap: Self.snap)
                         rect = clamped(snapped(resized, in: size), in: size)
                     }
-                    .onEnded { _ in dragStart = nil; isDragging = false }
+                    .onEnded { _ in dragStart = nil; isDragging = false; resizing = false }
             )
     }
 
-    /// Sits in the middle of the selection, so the controls are always with the
-    /// area being chosen rather than adrift somewhere else on the display.
+    /// Travels with the selection but never sits on it: on a tall 9:16 column
+    /// the panel covered the middle of the very area being framed, and hid the
+    /// picture the user is trying to judge.
     private func hud(in size: CGSize) -> some View {
         VStack(spacing: 9) {
-            Text("Drag to move · corners to resize")
+            Text("Drag anywhere to move · corners to resize")
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(.white.opacity(0.85))
             Text(sizeLabel)
@@ -202,7 +214,29 @@ private struct ScreenRegionPickerView: View {
                 .strokeBorder(.white.opacity(0.14), lineWidth: 1)
         )
         .fixedSize()
-        .position(x: rect.midX, y: rect.midY)
+        .position(hudCenter(in: size))
+    }
+
+    /// Below the selection, else above, else alongside — whichever side it
+    /// leaves room on. A full-height selection only ever leaves the sides.
+    private func hudCenter(in size: CGSize) -> CGPoint {
+        let panel = CGSize(width: 360, height: 96)
+        let gap: CGFloat = 18
+        let midX = min(max(panel.width / 2 + 8, rect.midX), size.width - panel.width / 2 - 8)
+
+        if rect.maxY + gap + panel.height <= size.height {
+            return CGPoint(x: midX, y: rect.maxY + gap + panel.height / 2)
+        }
+        if rect.minY - gap - panel.height >= 0 {
+            return CGPoint(x: midX, y: rect.minY - gap - panel.height / 2)
+        }
+        if rect.maxX + gap + panel.width <= size.width {
+            return CGPoint(x: rect.maxX + gap + panel.width / 2, y: size.height / 2)
+        }
+        if rect.minX - gap - panel.width >= 0 {
+            return CGPoint(x: rect.minX - gap - panel.width / 2, y: size.height / 2)
+        }
+        return CGPoint(x: size.width / 2, y: size.height - gap - panel.height / 2)
     }
 
     /// The captured size in real pixels, so it's obvious when a selection is

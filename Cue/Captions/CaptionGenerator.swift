@@ -141,10 +141,14 @@ final class CaptionGenerator: ObservableObject {
                 break
             }
         }
-        // About -26 dB. Real speech peaks far above this even from a quiet
-        // talker; a microphone that never picked up the room sits well below.
+        // About -46 dB, and deliberately far below speaking level: anything
+        // above it is lifted before transcription, so quiet talking reaches the
+        // recogniser rather than being written off here. This threshold now
+        // means what it says — no device, no permission, or a muted input. The
+        // old -26 dB line called genuine speech from a turned-down microphone
+        // silence, and sent people to check hardware that was working.
         if let audioURL = store.audioURL(for: recording),
-           let peak = Self.peakLevel(of: audioURL), peak < 0.05 {
+           let peak = Self.peakLevel(of: audioURL), peak < 0.005 {
             throw Failure.silentRecording
         }
         throw Failure.noTranscript(TranscriptionService.resolve(locale) ?? locale)

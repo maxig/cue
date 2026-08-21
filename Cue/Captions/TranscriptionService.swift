@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Accelerate
 import Speech
 
 /// Turns a recording's audio sidecar into timed words, entirely on this Mac.
@@ -91,15 +92,92 @@ enum TranscriptionService {
 
     /// Transcribes `audioURL`, preferring the newer speech engine when this Mac
     /// has it and falling back to the older on-device recognizer.
+    ///
+    /// Quiet recordings are lifted first. A microphone behind a turned-down
+    /// input volume records speech 20-30 dB below where a recogniser expects
+    /// it, and what comes back is not a poor transcript but no transcript at
+    /// all — reported, unhelpfully, as "no speech in this recording". Cue can
+    /// see the level perfectly well, so it fixes it rather than asking anyone
+    /// to go hunting for a system slider.
     static func transcribe(audioURL: URL, locale: Locale) async throws -> Result {
+        let boosted = amplifiedCopy(of: audioURL)
+        defer { if let boosted { try? FileManager.default.removeItem(at: boosted) } }
+        let source = boosted ?? audioURL
+
         if #available(macOS 26.0, *) {
-            if let words = try? await analyzerTranscribe(audioURL: audioURL, locale: locale),
+            if let words = try? await analyzerTranscribe(audioURL: source, locale: locale),
                !words.isEmpty {
                 return Result(words: words, locale: locale)
             }
         }
-        let words = try await recognizerTranscribe(audioURL: audioURL, locale: locale)
+        let words = try await recognizerTranscribe(audioURL: source, locale: locale)
         return Result(words: words, locale: resolve(locale) ?? locale)
+    }
+
+    // MARK: Levelling
+
+    /// Peak a lifted copy aims for. Short of 1.0 so that the loudest syllable
+    /// keeps a little headroom instead of clipping flat.
+    private static let targetPeak: Float = 0.9
+    /// Loud enough already — lifting this would only raise the room with it.
+    private static let healthyPeak: Float = 0.35
+    /// Below this there is nothing to rescue: no device, no permission, or a
+    /// muted input, and multiplying a noise floor just makes a loud noise floor.
+    private static let hopelessPeak: Float = 0.0005
+
+    /// A gain-corrected copy of `url` in a temporary file, or nil when the
+    /// audio needs no help or is beyond it. The recording on disk is never
+    /// modified — this copy exists only for the length of one transcription.
+    private static func amplifiedCopy(of url: URL) -> URL? {
+        guard let peak = peak(of: url), peak > hopelessPeak, peak < healthyPeak else { return nil }
+        let gain = targetPeak / peak
+
+        guard let input = try? AVAudioFile(forReading: url) else { return nil }
+        let format = input.processingFormat
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cue-levelled-\(UUID().uuidString).wav")
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: format.sampleRate,
+            AVNumberOfChannelsKey: format.channelCount,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false
+        ]
+        guard let output = try? AVAudioFile(forWriting: destination, settings: settings),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16384) else { return nil }
+
+        while (try? input.read(into: buffer)) != nil, buffer.frameLength > 0 {
+            if let channels = buffer.floatChannelData {
+                var scale = gain
+                for channel in 0..<Int(format.channelCount) {
+                    vDSP_vsmul(channels[channel], 1, &scale, channels[channel], 1,
+                               vDSP_Length(buffer.frameLength))
+                }
+            }
+            guard (try? output.write(from: buffer)) != nil else {
+                try? FileManager.default.removeItem(at: destination)
+                return nil
+            }
+        }
+        return destination
+    }
+
+    /// Loudest sample in the file, 0…1.
+    private static func peak(of url: URL) -> Float? {
+        guard let file = try? AVAudioFile(forReading: url),
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 16384)
+        else { return nil }
+        var peak: Float = 0
+        while (try? file.read(into: buffer)) != nil, buffer.frameLength > 0 {
+            guard let channels = buffer.floatChannelData else { break }
+            for channel in 0..<Int(buffer.format.channelCount) {
+                var channelPeak: Float = 0
+                vDSP_maxmgv(channels[channel], 1, &channelPeak, vDSP_Length(buffer.frameLength))
+                peak = max(peak, channelPeak)
+            }
+        }
+        return peak
     }
 
     // MARK: macOS 26 — SpeechAnalyzer

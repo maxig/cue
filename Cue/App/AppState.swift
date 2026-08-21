@@ -38,6 +38,11 @@ final class AppState: ObservableObject {
     /// active, and a signature of the camera inputs currently wired, so we can
     /// keep the session warm across popover reopens instead of restarting it.
     private var livePreviewActive = false
+    /// Whether the recorder popover is actually on screen. The region rectangle
+    /// is popover furniture and must never outlive it: once the popover has
+    /// gone there is nothing left to dismiss it with, so it has to be tied to
+    /// something more definite than the preview flags.
+    private var popoverVisible = false
     private var previewSignature: String?
     private var didRestoreMode = false
 
@@ -546,6 +551,7 @@ final class AppState: ObservableObject {
     /// bubble and the red capture-region indicator, Loom-style, so the user sees
     /// exactly what will be recorded — and keeps the camera warm for tight sync.
     func popoverDidAppear() {
+        popoverVisible = true
         guard state == .idle else { return }
         livePreviewActive = true
         updateCaptureIndicator()
@@ -556,8 +562,17 @@ final class AppState: ObservableObject {
     /// Called when the popover closes. Tears the preview down only if we're idle;
     /// once a countdown/recording is under way the camera must keep running.
     func popoverDidDisappear() {
-        guard state == .idle else { return }
+        // Unconditionally, whatever is going on: the meter and the red region
+        // rectangle belong to the popover. Leaving the rectangle behind strands
+        // it on screen with nothing able to take it away — closing the popover
+        // is the one gesture a user has, and it was being skipped whenever this
+        // returned early, which is any close that isn't idle: mid-countdown,
+        // mid-recording, or while a finished take is still being composed.
+        popoverVisible = false
         micLevel.stop()
+        captureIndicator.hide()
+        // The camera is the exception — mid-recording it has to keep running.
+        guard state == .idle else { return }
         teardownCamera()
     }
 
@@ -604,7 +619,8 @@ final class AppState: ObservableObject {
     }
 
     private func updateCaptureIndicator() {
-        guard state == .idle, livePreviewActive, config.mode != .cameraOnly,
+        guard popoverVisible, state == .idle, livePreviewActive,
+              config.mode != .cameraOnly,
               let rect = captureRegionRect() else {
             captureIndicator.hide()
             return
