@@ -4,6 +4,23 @@ The `## <version> — <date>` section matching a release tag becomes the GitHub
 release body **and** the in-app Sparkle update notes. Write it for users:
 what changed and why they'd care, not commit titles.
 
+## 1.6.3 — 2026-08-21
+
+Fixes a crash introduced in 1.6.2: the app quit the moment you started a
+recording or chose an area of the screen to record.
+
+- Cue no longer quits on Start Recording, or when you pick the part of the
+  screen to record. Both of those switch off the microphone level meter added
+  in 1.6.2, and switching it off while it was running brought the whole app
+  down. Only sessions with the microphone turned on ever hit it — which is
+  most of them.
+- The meter now hands the microphone over cleanly before a recording claims it,
+  and can no longer flicker back to life for a moment after recording has
+  started.
+- If Cue asked for microphone access and you took a moment to answer, it could
+  start listening again after your recording had already begun. It now checks
+  that it's still wanted before starting.
+
 ## 1.6.2 — 2026-08-18
 
 You can now see whether your microphone is actually hearing you, before you
