@@ -212,6 +212,15 @@ struct RecorderPopoverView: View {
                 .font(.cueCaption)
                 .foregroundStyle(Theme.accent)
                 .lineLimit(1)
+            } else if app.micLevel.isTooQuiet {
+                // Being heard faintly looks identical to not being heard at all,
+                // but the fix is a volume slider rather than another microphone.
+                Button(tooQuietMessage) { app.openSoundInputSettings() }
+                    .buttonStyle(.plain)
+                    .font(.cueCaption)
+                    .foregroundStyle(Theme.accent)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
             } else if app.micLevel.isRunning && !app.micLevel.hasHeardAnything {
                 Text("Not hearing anything yet — say something to check")
                     .font(.cueCaption)
@@ -220,6 +229,15 @@ struct RecorderPopoverView: View {
             }
         }
         .padding(.horizontal, 4)
+    }
+
+    /// Names the input volume when the device has one, because "turn it up"
+    /// is only useful advice once you know it's currently near the bottom.
+    private var tooQuietMessage: String {
+        if let gain = app.micLevel.inputGain {
+            return "Very quiet — input volume is only \(Int((gain * 100).rounded()))%. Turn it up in Sound settings."
+        }
+        return "Very quiet — captions may come back empty. Check your input volume in Sound settings."
     }
 
     private var micOn: Bool { app.config.microphoneEnabled && hasMic }

@@ -24,6 +24,23 @@ final class MicLevelMonitor: NSObject, ObservableObject {
     /// Whether the meter is actually live. Published rather than read back off
     /// the session, which is only safe to touch on its own queue.
     @Published private(set) var isRunning = false
+    /// Loudest level heard since monitoring started, in dB, or nil before any
+    /// audio has arrived. Kept alongside the 0…1 bar because the advice worth
+    /// giving depends on the real level, not on the drawn one.
+    @Published private(set) var loudestDecibels: Double?
+    /// The selected device's input volume, 0…1, when it has an adjustable one.
+    @Published private(set) var inputGain: Double?
+
+    /// Quietest level the bar shows at all, and the level that fills it. Speech
+    /// into a well-set-up microphone sits near -25 dB; the floor goes low enough
+    /// that a badly attenuated one still visibly moves instead of reading as a
+    /// flat, dead line — which is the one thing this meter must never do.
+    private static let floorDecibels = -60.0
+    private static let ceilingDecibels = -10.0
+    /// Below this, the loudest thing said still transcribes to nothing:
+    /// captions count a peak under -26 dBFS as silence, and windowed RMS runs
+    /// roughly 12 dB below peak.
+    private static let tooQuietDecibels = -38.0
 
     private let session = MicSession()
     /// The device the meter is meant to be showing. Lets a start result that
@@ -33,6 +50,14 @@ final class MicLevelMonitor: NSObject, ObservableObject {
     /// Whether anything at all has been heard — a flat zero here is the symptom
     /// worth surfacing.
     var hasHeardAnything: Bool { peak > 0.01 }
+
+    /// Something is being heard, but so faintly that a recording of it would
+    /// come back from the transcriber empty. Worth telling apart from a dead
+    /// microphone: the fix is a volume slider, not a different device.
+    var isTooQuiet: Bool {
+        guard isRunning, let loudest = loudestDecibels else { return false }
+        return loudest < Self.tooQuietDecibels
+    }
 
     /// Starts (or re-points) monitoring. Idempotent for the same device.
     func start(deviceID: String?) {
@@ -44,7 +69,11 @@ final class MicLevelMonitor: NSObject, ObservableObject {
             requestedDeviceID = deviceID
             level = 0
             peak = 0
+            loudestDecibels = nil
         }
+        // Re-read each time the popover opens or the choice changes, so turning
+        // the slider up and coming back clears the warning.
+        inputGain = AudioInputGain.forDevice(uniqueID: deviceID)
         session.start(deviceID: deviceID, delegate: self) { [weak self] running in
             guard let self, self.requestedDeviceID == deviceID else { return }
             self.isRunning = running
@@ -56,6 +85,8 @@ final class MicLevelMonitor: NSObject, ObservableObject {
         isRunning = false
         level = 0
         peak = 0
+        loudestDecibels = nil
+        inputGain = nil
         session.stop()
     }
 }
@@ -67,8 +98,9 @@ extension MicLevelMonitor: AVCaptureAudioDataOutputSampleBufferDelegate {
         guard let rms = Self.rms(of: sampleBuffer) else { return }
         // Speech lives roughly between -50 dB and -10 dB; map that onto the bar
         // so ordinary talking fills most of it rather than a sliver.
-        let db = 20 * log10(max(rms, 1e-7))
-        let normalized = min(max((Double(db) + 50) / 40, 0), 1)
+        let db = Double(20 * log10(max(rms, 1e-7)))
+        let span = Self.ceilingDecibels - Self.floorDecibels
+        let normalized = min(max((db - Self.floorDecibels) / span, 0), 1)
         Task { @MainActor [weak self] in
             // A buffer still in flight when the meter stopped must not light it
             // back up — the popover is gone and capture is taking the device.
@@ -76,6 +108,7 @@ extension MicLevelMonitor: AVCaptureAudioDataOutputSampleBufferDelegate {
             // Rise fast so a syllable shows, fall slowly so it stays readable.
             self.level = normalized > self.level ? normalized : self.level * 0.82 + normalized * 0.18
             self.peak = max(self.peak, normalized)
+            self.loudestDecibels = max(self.loudestDecibels ?? -.infinity, db)
         }
     }
 
