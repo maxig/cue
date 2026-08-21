@@ -477,6 +477,13 @@ final class AppState: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    /// Opens the pane holding the input volume slider — the setting behind most
+    /// recordings that come out too quiet to caption.
+    func openSoundInputSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     /// Whether a just-finished recording should get captions without being asked.
     private func shouldCaption(_ recording: Recording) -> Bool {
         preferences.creativeModeEnabled && preferences.captionsEnabled
