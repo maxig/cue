@@ -36,6 +36,59 @@ enum TranscriptionService {
         }
     }
 
+    // MARK: Choosing a language
+
+    /// The language to transcribe in when the user hasn't picked one.
+    ///
+    /// Deliberately not `Locale.current`. That is the app's *interface* locale,
+    /// and Cue ships only English, so on a Norwegian Mac it comes out as en_NO:
+    /// English words listened for in Norwegian speech, which finds nothing every
+    /// single time and reports it as "no speech in this recording". What matters
+    /// is the language the person actually speaks — the first of their preferred
+    /// languages this Mac can transcribe at all.
+    static func preferredLocale() -> Locale {
+        for identifier in Locale.preferredLanguages {
+            if let match = resolve(Locale(identifier: identifier)) { return match }
+        }
+        return resolve(Locale.current) ?? Locale.current
+    }
+
+    /// Maps a requested locale onto one the speech engine really supports, or
+    /// nil when it supports nothing in that language.
+    ///
+    /// `SFSpeechRecognizer(locale:)` can't be trusted to refuse: handed en_NO —
+    /// a locale absent from `supportedLocales()` — it hands back an available,
+    /// on-device recognizer that then listens for English. So the matching has
+    /// to happen here, or an unsupported language quietly becomes a different
+    /// one and the failure is reported as silence.
+    static func resolve(_ locale: Locale) -> Locale? {
+        let supported = SFSpeechRecognizer.supportedLocales()
+        let wanted = canonical(locale.identifier)
+        if let exact = supported.first(where: { canonical($0.identifier) == wanted }) { return exact }
+
+        guard let language = locale.language.languageCode?.identifier else { return nil }
+        let sameLanguage = supported.filter { $0.language.languageCode?.identifier == language }
+        guard !sameLanguage.isEmpty else { return nil }
+        // Same language, and the speaker's own region when that exists —
+        // en-GB rather than en-US for someone in Britain.
+        if let region = locale.region?.identifier,
+           let sameRegion = sameLanguage.first(where: { $0.region?.identifier == region }) {
+            return sameRegion
+        }
+        // Otherwise the language's own home region, so English falls to en-US
+        // and Portuguese to pt-BR rather than whatever sorts first.
+        let natural = Locale.Language(identifier: Locale.Language(identifier: language).maximalIdentifier)
+        if let home = natural.region?.identifier,
+           let homeMatch = sameLanguage.first(where: { $0.region?.identifier == home }) {
+            return homeMatch
+        }
+        return sameLanguage.min { $0.identifier < $1.identifier }
+    }
+
+    private static func canonical(_ identifier: String) -> String {
+        identifier.replacingOccurrences(of: "_", with: "-").lowercased()
+    }
+
     /// Transcribes `audioURL`, preferring the newer speech engine when this Mac
     /// has it and falling back to the older on-device recognizer.
     static func transcribe(audioURL: URL, locale: Locale) async throws -> Result {
@@ -46,7 +99,7 @@ enum TranscriptionService {
             }
         }
         let words = try await recognizerTranscribe(audioURL: audioURL, locale: locale)
-        return Result(words: words, locale: locale)
+        return Result(words: words, locale: resolve(locale) ?? locale)
     }
 
     // MARK: macOS 26 — SpeechAnalyzer
@@ -136,7 +189,10 @@ enum TranscriptionService {
 
     private static func recognizerTranscribe(audioURL: URL, locale: Locale) async throws -> [CaptionWord] {
         guard await authorize() == .authorized else { throw Failure.notAuthorized }
-        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
+        // Resolve first: handing the recognizer an unsupported locale gets a
+        // working recognizer for the wrong language rather than a refusal.
+        guard let supported = resolve(locale) else { throw Failure.unsupportedLanguage(locale) }
+        guard let recognizer = SFSpeechRecognizer(locale: supported), recognizer.isAvailable else {
             throw Failure.unsupportedLanguage(locale)
         }
         guard recognizer.supportsOnDeviceRecognition else { throw Failure.unsupportedLanguage(locale) }

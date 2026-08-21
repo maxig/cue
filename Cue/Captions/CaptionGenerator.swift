@@ -147,13 +147,13 @@ final class CaptionGenerator: ObservableObject {
            let peak = Self.peakLevel(of: audioURL), peak < 0.05 {
             throw Failure.silentRecording
         }
-        throw Failure.noTranscript
+        throw Failure.noTranscript(TranscriptionService.resolve(locale) ?? locale)
     }
 
     enum Failure: LocalizedError {
         case busy
         case notEditable
-        case noTranscript
+        case noTranscript(Locale)
         case silentRecording
         case cannotTranscribe(String)
         case renderFailed
@@ -162,7 +162,12 @@ final class CaptionGenerator: ObservableObject {
             switch self {
             case .busy: return "Cue is already making captions for another recording."
             case .notEditable: return "Cue can't add captions to this recording — it was made before captions existed. Record a new one to use them."
-            case .noTranscript: return "Cue couldn't make out any speech in this recording, so there was nothing to caption."
+            case let .noTranscript(locale):
+                // Naming the language turns the commonest cause — Cue listening
+                // in one language while the speaker used another — from a dead
+                // end into something the user can actually act on.
+                let name = Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier
+                return "Cue listened for \(name) and couldn't make out any speech in this recording. If you were speaking another language, choose it under Settings ▸ Captions."
             case .silentRecording: return "Your microphone didn't pick up any sound during this recording, so there was nothing to caption. Check that the right microphone is selected — Cue shows its level next to the microphone before you record."
             case let .cannotTranscribe(reason): return reason
             case .renderFailed: return "The captions were written down, but the video couldn't be updated with them."
