@@ -4,6 +4,19 @@ The `## <version> — <date>` section matching a release tag becomes the GitHub
 release body **and** the in-app Sparkle update notes. Write it for users:
 what changed and why they'd care, not commit titles.
 
+## 1.6.4 — 2026-08-21
+
+Captions work in your own language now.
+
+- Cue wrote captions in the language of its own menus — English — whatever
+  language you were actually speaking. If you speak anything else it listened
+  for the wrong words, found none, and told you it couldn't make out any speech
+  in the recording. It now starts from the language your Mac is set to, and you
+  can still pick a different one under Settings ▸ Captions.
+- When Cue genuinely can't make out any speech, it now says which language it
+  was listening for and where to change it, so a mismatch is obvious instead of
+  looking like a microphone problem.
+
 ## 1.6.3 — 2026-08-21
 
 Fixes a crash introduced in 1.6.2: the app quit the moment you started a
