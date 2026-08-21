@@ -108,6 +108,17 @@ private struct ScreenRegionPickerView: View {
             // own body worked, and on a tall 9:16 column the controls covered
             // most of it — leaving almost nothing to actually drag.
             .gesture(moveGesture(in: geo.size))
+            // Clicking off the selection dismisses the picker. Everyone tries
+            // it, and without it the only ways out are Escape and a button —
+            // which leaves the overlay looking stuck to anyone who clicks away
+            // expecting it to go, exactly as every other macOS overlay does.
+            .simultaneousGesture(
+                SpatialTapGesture()
+                    .onEnded { value in
+                        guard !rect.contains(value.location) else { return }
+                        onFinish(.cancelled)
+                    }
+            )
             .onAppear {
                 if rect == .zero { rect = clamped(denormalize(initial, in: geo.size), in: geo.size) }
             }

@@ -4,6 +4,27 @@ The `## <version> — <date>` section matching a release tag becomes the GitHub
 release body **and** the in-app Sparkle update notes. Write it for users:
 what changed and why they'd care, not commit titles.
 
+## 1.6.6 — 2026-08-21
+
+Quiet recordings get captions, and choosing an area of the screen works.
+
+- A recording made through a turned-down microphone now gets captions anyway.
+  Cue turns the volume up itself before reading the words, so a voice recorded
+  too softly no longer comes back as "didn't pick up any sound". Your recording
+  is left exactly as it was — only the copy Cue reads from is changed.
+- Cue was also far too quick to call a recording silent. Speech that was merely
+  quiet got reported as a microphone that heard nothing, sending you off to
+  check hardware that was working perfectly well.
+- You can drag the capture area from anywhere on the screen now. The controls
+  used to sit in the middle of the area you were choosing, covering the only
+  part you could grab — so it barely moved, and hid the very framing you were
+  trying to judge. They now sit beside it and keep out of the way.
+- Clicking outside the area picker closes it, like every other overlay on your
+  Mac. Until now only Escape or the buttons would.
+- The red rectangle showing what will be recorded no longer gets stranded on
+  screen with no way to remove it. Closing the Cue menu always takes it away,
+  whatever Cue happens to be doing.
+
 ## 1.6.5 — 2026-08-21
 
 The microphone meter now tells you when your input volume is the problem.
@@ -13,20 +34,6 @@ The microphone meter now tells you when your input volume is the problem.
   microphone that wasn't working at all. It now moves for quiet sound instead
   of going flat, tells you what your input volume is currently set to, and
   takes you straight to the setting that fixes it.
-- Better still, quiet recordings now caption anyway. Cue turns the volume up
-  itself before reading the words, so a microphone recorded too softly no
-  longer comes back as "didn't pick up any sound". Your recording is left
-  exactly as it was.
-
-Choosing an area of the screen actually works.
-
-- You can drag the area from anywhere on the screen now. The controls used to
-  sit in the middle of the area you were choosing, covering the only part you
-  could grab — so it barely moved, and hid the very framing you were judging.
-  They now sit beside it and keep out of the way.
-- The red rectangle showing what will be recorded no longer gets stranded on
-  screen with no way to remove it. Closing the Cue menu always takes it away,
-  whatever Cue happens to be doing.
 
 ## 1.6.4 — 2026-08-21
 
