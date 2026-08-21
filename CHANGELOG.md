@@ -4,6 +4,16 @@ The `## <version> — <date>` section matching a release tag becomes the GitHub
 release body **and** the in-app Sparkle update notes. Write it for users:
 what changed and why they'd care, not commit titles.
 
+## 1.6.5 — 2026-08-21
+
+The microphone meter now tells you when your input volume is the problem.
+
+- If your Mac's input volume is turned down, your voice is recorded far too
+  quietly to caption — but the meter just sat still, looking exactly like a
+  microphone that wasn't working at all. It now moves for quiet sound instead
+  of going flat, tells you what your input volume is currently set to, and
+  takes you straight to the setting that fixes it.
+
 ## 1.6.4 — 2026-08-21
 
 Captions work in your own language now.
