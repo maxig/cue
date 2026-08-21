@@ -568,7 +568,10 @@ final class AppState: ObservableObject {
         if permissions.microphone == .notDetermined {
             Task { [weak self] in
                 await self?.permissions.requestMicrophone()
-                self?.micLevel.start(deviceID: id)
+                // The popover may have closed, or a recording started, while
+                // the system prompt was up — go back through the checks above
+                // rather than claiming the device behind capture's back.
+                self?.startMicMonitorIfNeeded()
             }
             return
         }
