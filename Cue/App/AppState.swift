@@ -492,7 +492,8 @@ final class AppState: ObservableObject {
             errorMessage = "Cue can't add captions to this recording — it was made before captions existed. Record a new one to use them."
             return nil
         }
-        let locale = preferences.captionLocaleIdentifier.map(Locale.init(identifier:)) ?? Locale.current
+        let locale = preferences.captionLocaleIdentifier.map(Locale.init(identifier:))
+            ?? TranscriptionService.preferredLocale()
         do {
             return try await captionGenerator.generate(
                 for: recording,
