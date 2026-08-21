@@ -13,6 +13,20 @@ The microphone meter now tells you when your input volume is the problem.
   microphone that wasn't working at all. It now moves for quiet sound instead
   of going flat, tells you what your input volume is currently set to, and
   takes you straight to the setting that fixes it.
+- Better still, quiet recordings now caption anyway. Cue turns the volume up
+  itself before reading the words, so a microphone recorded too softly no
+  longer comes back as "didn't pick up any sound". Your recording is left
+  exactly as it was.
+
+Choosing an area of the screen actually works.
+
+- You can drag the area from anywhere on the screen now. The controls used to
+  sit in the middle of the area you were choosing, covering the only part you
+  could grab — so it barely moved, and hid the very framing you were judging.
+  They now sit beside it and keep out of the way.
+- The red rectangle showing what will be recorded no longer gets stranded on
+  screen with no way to remove it. Closing the Cue menu always takes it away,
+  whatever Cue happens to be doing.
 
 ## 1.6.4 — 2026-08-21
 
